@@ -68,6 +68,10 @@ class WebRTCCamera extends VideoRTC {
             poster_remote: config.poster && (config.poster.indexOf('://') > 0 || config.poster.charAt(0) === '/'),
         }, config);
 
+        if (!this.config.id && this.config.card_id) {
+            this.config.id = this.config.card_id;
+        }
+
         this.streamID = -1;
         this.nextStream(false);
 
@@ -137,6 +141,24 @@ class WebRTCCamera extends VideoRTC {
         this.renderCustomUI();
         this.renderShortcuts();
         this.renderStyle();
+
+        this.addEventListener('webrtc-screenshot', ev => {
+            this.handleScreenshotRequest(ev.detail || {});
+        });
+        this.addEventListener('webrtc-mute', ev => {
+            this.handleMuteRequest(ev.detail || {}, true);
+        });
+        this.addEventListener('webrtc-unmute', ev => {
+            this.handleMuteRequest(ev.detail || {}, false);
+        });
+        this.addEventListener('webrtc-fullscreen', ev => {
+            this.handleFullscreenRequest(ev.detail || {});
+        });
+
+        if (this.video) {
+            this.video.addEventListener('volumechange', () => this.emitAudioState());
+            this.emitAudioState();
+        }
     }
 
     onconnect() {
@@ -448,6 +470,62 @@ class WebRTCCamera extends VideoRTC {
         const ts = new Date().toISOString().substring(0, 19).replaceAll('-', '').replaceAll(':', '');
         a.download = `snapshot_${ts}.jpeg`;
         a.click();
+    }
+
+    handleScreenshotRequest(detail = {}) {
+        if (!this.matchesActionTarget(detail)) return;
+        this.saveScreenshot();
+    }
+
+    handleMuteRequest(detail = {}, mute) {
+        if (!this.matchesActionTarget(detail)) return;
+        if (!this.video) return;
+        this.video.muted = mute;
+        this.emitAudioState();
+    }
+
+    handleFullscreenRequest(detail = {}) {
+        if (!this.matchesActionTarget(detail)) return;
+        const request = this.requestFullscreen
+            ? () => this.requestFullscreen()
+            : this.video && this.video.requestFullscreen
+                ? () => this.video.requestFullscreen()
+                : null;
+        if (!request) return;
+        const result = request();
+        if (result && result.catch) result.catch(console.warn);
+    }
+
+    matchesActionTarget(detail = {}) {
+        const targetEntity = detail.target_entity;
+        const targetUrl = detail.target_url;
+        const targetId = detail.target_id;
+        const hasFilter = !!(targetEntity || targetUrl || targetId);
+
+        if (!hasFilter) return false;
+        if (!this.config) return false;
+        if (targetEntity && targetEntity !== this.config.entity) return false;
+        if (targetUrl && targetUrl !== this.config.url) return false;
+        if (targetId && targetId !== this.config.id) return false;
+
+        return true;
+    }
+
+    emitAudioState() {
+        if (!this.video) return;
+        const muted = !!this.video.muted;
+        this.dataset.muted = muted ? 'true' : 'false';
+        const detail = {
+            target_entity: this.config ? this.config.entity : undefined,
+            target_url: this.config ? this.config.url : undefined,
+            target_id: this.config ? this.config.id : undefined,
+            muted,
+        };
+        this.dispatchEvent(new CustomEvent('webrtc-audio-state', {
+            bubbles: true,
+            composed: true,
+            detail,
+        }));
     }
 
     renderCustomUI() {
