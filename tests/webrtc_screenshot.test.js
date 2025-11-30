@@ -2,6 +2,8 @@ import {beforeEach, describe, expect, it, vi} from 'vitest';
 
 await import('../custom_components/webrtc/www/webrtc-camera.js');
 
+const CARD_TAG = 'webrtc-camera-sfenton';
+
 const baseConfig = {
     url: 'front_door',
     streams: [{url: 'front_door'}],
@@ -10,7 +12,7 @@ const baseConfig = {
 };
 
 const createCamera = (overrides = {}) => {
-    const el = document.createElement('webrtc-camera');
+    const el = document.createElement(CARD_TAG);
     el.setConfig({...baseConfig, ...overrides});
     el.oninit();
     return el;
@@ -22,7 +24,7 @@ const attachBubbleBridge = (root, detail, bubbleEvent = 'bubble-screenshot', tar
     root.__webrtcBridges[bubbleEvent] = true;
     root.addEventListener(bubbleEvent, ev => {
         ev.stopPropagation();
-        const camera = root.querySelector('webrtc-camera');
+        const camera = root.querySelector(CARD_TAG);
         if (!camera) return;
         camera.dispatchEvent(new CustomEvent(targetEvent, {
             bubbles: true,

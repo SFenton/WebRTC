@@ -760,10 +760,10 @@ class WebRTCCamera extends VideoRTC {
     }
 }
 
-customElements.define('webrtc-camera', WebRTCCamera);
+customElements.define('webrtc-camera-sfenton', WebRTCCamera);
 
 const card = {
-    type: 'webrtc-camera',
+    type: 'webrtc-camera-sfenton',
     name: 'WebRTC Camera',
     preview: false,
     description: 'WebRTC camera allows you to view the stream of almost any camera without delay',
