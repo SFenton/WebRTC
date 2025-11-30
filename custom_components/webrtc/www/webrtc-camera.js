@@ -140,11 +140,27 @@ class WebRTCCamera extends VideoRTC {
     connectedCallback() {
         super.connectedCallback();
         this._bindGlobalActionEvents();
+        // Emit initial mute state (will set body class if muted)
+        this._initializeAudioState();
     }
 
     disconnectedCallback() {
         this._unbindGlobalActionEvents();
+        this._cleanupBodyMuteClass();
         super.disconnectedCallback();
+    }
+    
+    _initializeAudioState() {
+        // Defer to next tick to ensure video is initialized
+        setTimeout(() => this.emitAudioState(), 0);
+    }
+    
+    _cleanupBodyMuteClass() {
+        const cardId = this.config ? this.config.id : undefined;
+        if (cardId && typeof document !== 'undefined' && document.body) {
+            document.body.classList.remove(`webrtc-muted-${cardId}`);
+            document.body.classList.remove(`webrtc-unmuted-${cardId}`);
+        }
     }
 
     oninit() {
@@ -539,6 +555,20 @@ class WebRTCCamera extends VideoRTC {
         if (!this.video) return;
         const muted = !!this.video.muted;
         this.dataset.muted = muted ? 'true' : 'false';
+        
+        // Update body class for CSS targeting from sibling elements
+        const cardId = this.config ? this.config.id : undefined;
+        if (cardId && typeof document !== 'undefined' && document.body) {
+            const className = `webrtc-muted-${cardId}`;
+            if (muted) {
+                document.body.classList.add(className);
+                document.body.classList.remove(`webrtc-unmuted-${cardId}`);
+            } else {
+                document.body.classList.remove(className);
+                document.body.classList.add(`webrtc-unmuted-${cardId}`);
+            }
+        }
+        
         const detail = {
             target_entity: this.config ? this.config.entity : undefined,
             target_url: this.config ? this.config.url : undefined,
