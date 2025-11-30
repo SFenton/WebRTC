@@ -231,4 +231,96 @@ describe('webrtc-camera screenshot events', () => {
 
         expect(spy).toHaveBeenCalledTimes(1);
     });
+
+    it('responds to hass-action fire-dom-event from Bubble Card', () => {
+        const popupCamera = mountCamera({card_id: 'front-door-popup'});
+        const pageCamera = mountCamera({card_id: 'page'});
+
+        const popupSpy = vi.spyOn(popupCamera, 'saveScreenshot').mockImplementation(() => {});
+        const pageSpy = vi.spyOn(pageCamera, 'saveScreenshot').mockImplementation(() => {});
+
+        // Simulate Bubble Card's fire-dom-event action
+        window.dispatchEvent(new CustomEvent('hass-action', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                config: {
+                    tap_action: {
+                        action: 'fire-dom-event',
+                        event: 'webrtc-screenshot',
+                        target_id: 'front-door-popup',
+                    },
+                },
+                action: 'tap',
+            },
+        }));
+
+        expect(popupSpy).toHaveBeenCalledTimes(1);
+        expect(pageSpy).not.toHaveBeenCalled();
+    });
+
+    it('hass-action toggle-mute works with target_id', () => {
+        const camera = mountCamera({card_id: 'front-door-popup'});
+        camera.video.muted = true;
+
+        window.dispatchEvent(new CustomEvent('hass-action', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                config: {
+                    tap_action: {
+                        action: 'fire-dom-event',
+                        event: 'webrtc-toggle-mute',
+                        target_id: 'front-door-popup',
+                    },
+                },
+                action: 'tap',
+            },
+        }));
+
+        expect(camera.video.muted).toBe(false);
+    });
+
+    it('ignores hass-action events that are not fire-dom-event', () => {
+        const camera = mountCamera({card_id: 'popup'});
+        const spy = vi.spyOn(camera, 'saveScreenshot').mockImplementation(() => {});
+
+        window.dispatchEvent(new CustomEvent('hass-action', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                config: {
+                    tap_action: {
+                        action: 'navigate',
+                        navigation_path: '#somewhere',
+                    },
+                },
+                action: 'tap',
+            },
+        }));
+
+        expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('ignores hass-action fire-dom-event with unknown event names', () => {
+        const camera = mountCamera({card_id: 'popup'});
+        const spy = vi.spyOn(camera, 'saveScreenshot').mockImplementation(() => {});
+
+        window.dispatchEvent(new CustomEvent('hass-action', {
+            bubbles: true,
+            composed: true,
+            detail: {
+                config: {
+                    tap_action: {
+                        action: 'fire-dom-event',
+                        event: 'some-other-event',
+                        target_id: 'popup',
+                    },
+                },
+                action: 'tap',
+            },
+        }));
+
+        expect(spy).not.toHaveBeenCalled();
+    });
 });

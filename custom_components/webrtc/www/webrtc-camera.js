@@ -554,14 +554,18 @@ class WebRTCCamera extends VideoRTC {
 
     _bindGlobalActionEvents() {
         if (this._globalActionBindings || typeof window === 'undefined') return;
-        const map = [
-            ['webrtc-screenshot', detail => this.handleScreenshotRequest(detail)],
-            ['webrtc-mute', detail => this.handleMuteRequest(detail, true)],
-            ['webrtc-unmute', detail => this.handleMuteRequest(detail, false)],
-            ['webrtc-toggle-mute', detail => this.handleToggleMuteRequest(detail)],
-            ['webrtc-fullscreen', detail => this.handleFullscreenRequest(detail)],
-        ];
-        this._globalActionBindings = map.map(([type, handler]) => {
+
+        // Map of webrtc event names to handlers
+        const eventHandlers = {
+            'webrtc-screenshot': detail => this.handleScreenshotRequest(detail),
+            'webrtc-mute': detail => this.handleMuteRequest(detail, true),
+            'webrtc-unmute': detail => this.handleMuteRequest(detail, false),
+            'webrtc-toggle-mute': detail => this.handleToggleMuteRequest(detail),
+            'webrtc-fullscreen': detail => this.handleFullscreenRequest(detail),
+        };
+
+        // Listen for raw CustomEvents (e.g. from Browser Mod or manual dispatch)
+        const rawBindings = Object.entries(eventHandlers).map(([type, handler]) => {
             const fn = event => {
                 const path = event.composedPath ? event.composedPath() : [];
                 if (path.includes(this)) return;
@@ -570,11 +574,42 @@ class WebRTCCamera extends VideoRTC {
             window.addEventListener(type, fn);
             return {type, fn};
         });
+
+        // Listen for hass-action events (from Bubble Card's fire-dom-event)
+        const hassActionHandler = event => {
+            const config = event.detail?.config;
+            if (!config) return;
+
+            // Check for fire-dom-event action type
+            const action = config.tap_action || config;
+            if (action.action !== 'fire-dom-event') return;
+
+            const eventName = action.event;
+            const handler = eventHandlers[eventName];
+            if (!handler) return;
+
+            // Build detail from the action config
+            const detail = {
+                target_id: action.target_id,
+                target_entity: action.target_entity,
+                target_url: action.target_url,
+                ...(action.data || {}),
+            };
+
+            handler(detail);
+        };
+        window.addEventListener('hass-action', hassActionHandler);
+
+        this._globalActionBindings = {
+            raw: rawBindings,
+            hassAction: hassActionHandler,
+        };
     }
 
     _unbindGlobalActionEvents() {
         if (!this._globalActionBindings || typeof window === 'undefined') return;
-        this._globalActionBindings.forEach(({type, fn}) => window.removeEventListener(type, fn));
+        this._globalActionBindings.raw.forEach(({type, fn}) => window.removeEventListener(type, fn));
+        window.removeEventListener('hass-action', this._globalActionBindings.hassAction);
         this._globalActionBindings = null;
     }
 
