@@ -18,20 +18,13 @@ const createCamera = (overrides = {}) => {
     return el;
 };
 
-const attachBubbleBridge = (root, detail, bubbleEvent = 'bubble-screenshot', targetEvent = 'webrtc-screenshot') => {
-    root.__webrtcBridges = root.__webrtcBridges || {};
-    if (root.__webrtcBridges[bubbleEvent]) return;
-    root.__webrtcBridges[bubbleEvent] = true;
-    root.addEventListener(bubbleEvent, ev => {
-        ev.stopPropagation();
-        const camera = root.querySelector(CARD_TAG);
-        if (!camera) return;
-        camera.dispatchEvent(new CustomEvent(targetEvent, {
-            bubbles: true,
-            composed: true,
-            detail,
-        }));
-    });
+const mountCamera = (overrides = {}) => {
+    const wrapper = document.createElement('div');
+    document.body.appendChild(wrapper);
+    const camera = document.createElement(CARD_TAG);
+    camera.setConfig({...baseConfig, ...overrides});
+    wrapper.appendChild(camera);
+    return camera;
 };
 
 describe('webrtc-camera screenshot events', () => {
@@ -85,29 +78,6 @@ describe('webrtc-camera screenshot events', () => {
         expect(pageSpy).not.toHaveBeenCalled();
     });
 
-    it('bubble-card bridge triggers only popup camera when duplicate streams exist', () => {
-        const popupContainer = document.createElement('div');
-        document.body.appendChild(popupContainer);
-        const popupCamera = createCamera({card_id: 'popup'});
-        popupContainer.appendChild(popupCamera);
-
-        const pageContainer = document.createElement('div');
-        document.body.appendChild(pageContainer);
-        const pageCamera = createCamera({card_id: 'page'});
-        pageContainer.appendChild(pageCamera);
-
-        const popupSpy = vi.spyOn(popupCamera, 'saveScreenshot').mockImplementation(() => {});
-        const pageSpy = vi.spyOn(pageCamera, 'saveScreenshot').mockImplementation(() => {});
-
-        attachBubbleBridge(popupContainer, {target_id: 'popup'});
-        attachBubbleBridge(pageContainer, {target_id: 'page'});
-
-        popupContainer.dispatchEvent(new CustomEvent('bubble-screenshot', {bubbles: true}));
-
-        expect(popupSpy).toHaveBeenCalledTimes(1);
-        expect(pageSpy).not.toHaveBeenCalled();
-    });
-
     it('mutes and unmutes via events when targets match', () => {
         const camera = createCamera();
         camera.video.muted = false;
@@ -153,29 +123,6 @@ describe('webrtc-camera screenshot events', () => {
         expect(camera.requestFullscreen).not.toHaveBeenCalled();
     });
 
-    it('bubble bridge mute only affects popup camera when duplicates exist', () => {
-        const popupContainer = document.createElement('div');
-        document.body.appendChild(popupContainer);
-        const popupCamera = createCamera({card_id: 'popup'});
-        popupContainer.appendChild(popupCamera);
-
-        const pageContainer = document.createElement('div');
-        document.body.appendChild(pageContainer);
-        const pageCamera = createCamera({card_id: 'page'});
-        pageContainer.appendChild(pageCamera);
-
-        popupCamera.video.muted = false;
-        pageCamera.video.muted = false;
-
-        attachBubbleBridge(popupContainer, {target_id: 'popup'}, 'bubble-mute', 'webrtc-mute');
-        attachBubbleBridge(pageContainer, {target_id: 'page'}, 'bubble-mute', 'webrtc-mute');
-
-        popupContainer.dispatchEvent(new CustomEvent('bubble-mute', {bubbles: true}));
-
-        expect(popupCamera.video.muted).toBe(true);
-        expect(pageCamera.video.muted).toBe(false);
-    });
-
     it('emits audio state events with detail and dataset', () => {
         const camera = createCamera({card_id: 'popup'});
         const handler = vi.fn();
@@ -208,5 +155,80 @@ describe('webrtc-camera screenshot events', () => {
         expect(camera.video.muted).toBe(true);
         expect(handler).toHaveBeenCalled();
         expect(handler.mock.calls[handler.mock.calls.length - 1][0].detail.muted).toBe(true);
+    });
+
+    it('toggle mute helper switches audio state and emits event', () => {
+        const camera = createCamera({card_id: 'popup'});
+        const handler = vi.fn();
+        camera.addEventListener('webrtc-audio-state', handler);
+
+        camera.video.muted = false;
+        camera.handleToggleMuteRequest({target_id: 'popup'});
+        expect(camera.video.muted).toBe(true);
+        expect(handler).toHaveBeenCalled();
+
+        handler.mockClear();
+        camera.handleToggleMuteRequest({target_id: 'popup'});
+        expect(camera.video.muted).toBe(false);
+        expect(handler).toHaveBeenCalled();
+    });
+
+    it('global screenshot events only trigger the targeted camera', () => {
+        const popupCamera = mountCamera({card_id: 'popup'});
+        const pageCamera = mountCamera({card_id: 'page'});
+
+        const popupSpy = vi.spyOn(popupCamera, 'saveScreenshot').mockImplementation(() => {});
+        const pageSpy = vi.spyOn(pageCamera, 'saveScreenshot').mockImplementation(() => {});
+
+        window.dispatchEvent(new CustomEvent('webrtc-screenshot', {
+            detail: {target_id: 'popup'},
+        }));
+
+        expect(popupSpy).toHaveBeenCalledTimes(1);
+        expect(pageSpy).not.toHaveBeenCalled();
+    });
+
+    it('global mute and toggle events only affect the matching camera', () => {
+        const popupCamera = mountCamera({card_id: 'popup'});
+        const pageCamera = mountCamera({card_id: 'page'});
+
+        popupCamera.video.muted = false;
+        pageCamera.video.muted = false;
+
+        window.dispatchEvent(new CustomEvent('webrtc-mute', {
+            detail: {target_id: 'popup'},
+        }));
+
+        expect(popupCamera.video.muted).toBe(true);
+        expect(pageCamera.video.muted).toBe(false);
+
+        window.dispatchEvent(new CustomEvent('webrtc-toggle-mute', {
+            detail: {target_id: 'popup'},
+        }));
+
+        expect(popupCamera.video.muted).toBe(false);
+        expect(pageCamera.video.muted).toBe(false);
+    });
+
+    it('global events without filters are ignored', () => {
+        const camera = mountCamera();
+        camera.video.muted = false;
+
+        window.dispatchEvent(new CustomEvent('webrtc-mute'));
+
+        expect(camera.video.muted).toBe(false);
+    });
+
+    it('events dispatched from the camera are not handled twice', () => {
+        const camera = mountCamera({card_id: 'popup'});
+        const spy = vi.spyOn(camera, 'saveScreenshot').mockImplementation(() => {});
+
+        camera.dispatchEvent(new CustomEvent('webrtc-screenshot', {
+            bubbles: true,
+            composed: true,
+            detail: {target_id: 'popup'},
+        }));
+
+        expect(spy).toHaveBeenCalledTimes(1);
     });
 });

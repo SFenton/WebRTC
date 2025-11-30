@@ -3,6 +3,10 @@ import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 
 class WebRTCCamera extends VideoRTC {
+    constructor() {
+        super();
+        this._globalActionBindings = null;
+    }
     /**
      * Step 1. Called by the Hass, when config changed.
      * @param {Object} config
@@ -133,6 +137,16 @@ class WebRTCCamera extends VideoRTC {
         return this.config.streams[this.streamID].name || `S${this.streamID}`;
     }
 
+    connectedCallback() {
+        super.connectedCallback();
+        this._bindGlobalActionEvents();
+    }
+
+    disconnectedCallback() {
+        this._unbindGlobalActionEvents();
+        super.disconnectedCallback();
+    }
+
     oninit() {
         super.oninit();
         this.renderMain();
@@ -150,6 +164,9 @@ class WebRTCCamera extends VideoRTC {
         });
         this.addEventListener('webrtc-unmute', ev => {
             this.handleMuteRequest(ev.detail || {}, false);
+        });
+        this.addEventListener('webrtc-toggle-mute', ev => {
+            this.handleToggleMuteRequest(ev.detail || {});
         });
         this.addEventListener('webrtc-fullscreen', ev => {
             this.handleFullscreenRequest(ev.detail || {});
@@ -484,6 +501,13 @@ class WebRTCCamera extends VideoRTC {
         this.emitAudioState();
     }
 
+    handleToggleMuteRequest(detail = {}) {
+        if (!this.matchesActionTarget(detail)) return;
+        if (!this.video) return;
+        this.video.muted = !this.video.muted;
+        this.emitAudioState();
+    }
+
     handleFullscreenRequest(detail = {}) {
         if (!this.matchesActionTarget(detail)) return;
         const request = this.requestFullscreen
@@ -526,6 +550,32 @@ class WebRTCCamera extends VideoRTC {
             composed: true,
             detail,
         }));
+    }
+
+    _bindGlobalActionEvents() {
+        if (this._globalActionBindings || typeof window === 'undefined') return;
+        const map = [
+            ['webrtc-screenshot', detail => this.handleScreenshotRequest(detail)],
+            ['webrtc-mute', detail => this.handleMuteRequest(detail, true)],
+            ['webrtc-unmute', detail => this.handleMuteRequest(detail, false)],
+            ['webrtc-toggle-mute', detail => this.handleToggleMuteRequest(detail)],
+            ['webrtc-fullscreen', detail => this.handleFullscreenRequest(detail)],
+        ];
+        this._globalActionBindings = map.map(([type, handler]) => {
+            const fn = event => {
+                const path = event.composedPath ? event.composedPath() : [];
+                if (path.includes(this)) return;
+                handler(event.detail || {});
+            };
+            window.addEventListener(type, fn);
+            return {type, fn};
+        });
+    }
+
+    _unbindGlobalActionEvents() {
+        if (!this._globalActionBindings || typeof window === 'undefined') return;
+        this._globalActionBindings.forEach(({type, fn}) => window.removeEventListener(type, fn));
+        this._globalActionBindings = null;
     }
 
     renderCustomUI() {
