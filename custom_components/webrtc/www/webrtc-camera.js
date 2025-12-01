@@ -882,7 +882,7 @@ class WebRTCCamera extends VideoRTC {
             @keyframes webrtc-spin {
                 to { transform: rotate(360deg); }
             }
-            .spinner {
+            .loading-spinner {
                 display: none;
                 position: absolute;
                 top: 50%;
@@ -897,8 +897,8 @@ class WebRTCCamera extends VideoRTC {
                 z-index: 10;
                 pointer-events: none;
             }
-            ha-card[data-stream-status="connecting"] .spinner,
-            ha-card[data-stream-status="disconnected"] .spinner {
+            ha-card[data-stream-status="connecting"] .loading-spinner,
+            ha-card[data-stream-status="disconnected"] .loading-spinner {
                 display: block;
             }
             /* Label overlay */
@@ -922,7 +922,7 @@ class WebRTCCamera extends VideoRTC {
                 <div class="status"></div>
                 <div class="mode"></div>
             </div>
-            <div class="spinner"></div>
+            <div class="loading-spinner"></div>
             <div class="label"></div>
         </ha-card>
         `;
