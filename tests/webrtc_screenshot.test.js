@@ -497,8 +497,10 @@ describe('webrtc-camera tap/hold action handlers', () => {
             double_tap_action: {action: 'navigate', navigation_path: '/cameras'},
         });
 
-        const hassActionHandler = vi.fn();
-        window.addEventListener('hass-action', hassActionHandler);
+        const locationChangedHandler = vi.fn();
+        window.addEventListener('location-changed', locationChangedHandler);
+
+        const pushStateSpy = vi.spyOn(history, 'pushState');
 
         // First tap
         camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
@@ -511,11 +513,12 @@ describe('webrtc-camera tap/hold action handlers', () => {
 
         await new Promise(r => setTimeout(r, 10));
 
-        expect(hassActionHandler).toHaveBeenCalledTimes(1);
-        expect(hassActionHandler.mock.calls[0][0].detail.action).toBe('double_tap');
-        expect(hassActionHandler.mock.calls[0][0].detail.config.action).toBe('navigate');
+        // Navigate action is handled directly, not via hass-action
+        expect(pushStateSpy).toHaveBeenCalledWith(null, "", '/cameras');
+        expect(locationChangedHandler).toHaveBeenCalled();
 
-        window.removeEventListener('hass-action', hassActionHandler);
+        window.removeEventListener('location-changed', locationChangedHandler);
+        pushStateSpy.mockRestore();
     });
 
     it('uses config.entity as default when action.entity not specified', async () => {
@@ -656,5 +659,98 @@ describe('webrtc-camera tap/hold action handlers', () => {
 
         expect(document.body.classList.contains('webrtc-muted-cleanup-test')).toBe(false);
         expect(document.body.classList.contains('webrtc-unmuted-cleanup-test')).toBe(false);
+    });
+
+    it('handles navigate action directly with history.pushState', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {
+                action: 'navigate',
+                navigation_path: '#camera-front-door',
+            },
+        });
+
+        const locationChangedHandler = vi.fn();
+        window.addEventListener('location-changed', locationChangedHandler);
+
+        const pushStateSpy = vi.spyOn(history, 'pushState');
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(pushStateSpy).toHaveBeenCalledWith(null, "", '#camera-front-door');
+        expect(locationChangedHandler).toHaveBeenCalled();
+
+        window.removeEventListener('location-changed', locationChangedHandler);
+        pushStateSpy.mockRestore();
+    });
+
+    it('handles navigate action with replace option', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {
+                action: 'navigate',
+                navigation_path: '/lovelace/cameras',
+                navigation_replace: true,
+            },
+        });
+
+        const replaceStateSpy = vi.spyOn(history, 'replaceState');
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(replaceStateSpy).toHaveBeenCalledWith(null, "", '/lovelace/cameras');
+
+        replaceStateSpy.mockRestore();
+    });
+
+    it('handles url action by opening new window', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {
+                action: 'url',
+                url_path: 'https://example.com',
+            },
+        });
+
+        const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(openSpy).toHaveBeenCalledWith('https://example.com', '_blank');
+
+        openSpy.mockRestore();
+    });
+
+    it('dispatches hass-action for more-info action', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            streams: [{url: 'front_door', entity: 'camera.front_door'}],
+            tap_action: {
+                action: 'more-info',
+            },
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).toHaveBeenCalled();
+        expect(hassActionHandler.mock.calls[0][0].detail.config.action).toBe('more-info');
+        expect(hassActionHandler.mock.calls[0][0].detail.config.entity).toBe('camera.front_door');
+
+        window.removeEventListener('hass-action', hassActionHandler);
     });
 });

@@ -318,8 +318,36 @@ class WebRTCCamera extends VideoRTC {
         const actionConfig = this.config?.[actionKey];
         if (!actionConfig || actionConfig.action === 'none') return;
 
+        const action = actionConfig.action;
+
+        // Handle navigate action directly (required for hash navigation to work with Bubble Card popups)
+        if (action === 'navigate') {
+            const path = actionConfig.navigation_path;
+            if (path) {
+                if (actionConfig.navigation_replace) {
+                    history.replaceState(null, "", path);
+                } else {
+                    history.pushState(null, "", path);
+                }
+                // Dispatch location-changed event (required for Bubble Card popups)
+                const event = new Event('location-changed', { bubbles: true, composed: true });
+                event.detail = { replace: actionConfig.navigation_replace || false };
+                window.dispatchEvent(event);
+            }
+            return;
+        }
+
+        // Handle URL action directly
+        if (action === 'url') {
+            const url = actionConfig.url_path;
+            if (url) {
+                window.open(url, '_blank');
+            }
+            return;
+        }
+
+        // For other actions (more-info, toggle, call-service, fire-dom-event), use hass-action
         // Build the config object for hass-action
-        // Spread actionConfig first, then set entity fallback if not explicitly provided
         const hassActionConfig = {
             ...actionConfig,
             entity: actionConfig.entity || this.config.entity,
