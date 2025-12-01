@@ -912,7 +912,6 @@ class WebRTCCamera extends VideoRTC {
                 color: white;
                 pointer-events: none;
                 z-index: 5;
-                text-shadow: 0 1px 3px rgba(0,0,0,0.5);
             }
         </style>
         <ha-card class="card">
