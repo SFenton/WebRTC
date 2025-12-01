@@ -882,9 +882,8 @@ class WebRTCCamera extends VideoRTC {
             @keyframes webrtc-spin {
                 to { transform: rotate(360deg); }
             }
-            ha-card[data-stream-status="connecting"]::after,
-            ha-card[data-stream-status="disconnected"]::after {
-                content: "";
+            .spinner {
+                display: none;
                 position: absolute;
                 top: 50%;
                 left: 50%;
@@ -898,8 +897,9 @@ class WebRTCCamera extends VideoRTC {
                 z-index: 10;
                 pointer-events: none;
             }
-            ha-card[data-stream-status="connected"]::after {
-                display: none;
+            ha-card[data-stream-status="connecting"] .spinner,
+            ha-card[data-stream-status="disconnected"] .spinner {
+                display: block;
             }
         </style>
         <ha-card class="card">
@@ -910,6 +910,7 @@ class WebRTCCamera extends VideoRTC {
                 <div class="status"></div>
                 <div class="mode"></div>
             </div>
+            <div class="spinner"></div>
         </ha-card>
         `;
 
