@@ -1,6 +1,7 @@
 /** Chrome 63+, Safari 11.1+ */
 import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
+import {streamManager} from './stream-manager.js?v=1.0.0';
 
 /**
  * Global stream registry for sharing streams between cards.
@@ -84,12 +85,17 @@ class WebRTCCamera extends VideoRTC {
          *     tap_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
          *     double_tap_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
          *     hold_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
+         *     
+         *     shared: boolean,
          * }} config
          */
         
-        // Check if this is a clone card
+        // Check if this is a clone card (explicit source reference)
         this._isClone = !!config.source;
         this._sourceCardId = config.source || null;
+        
+        // Check if this card uses the shared stream manager
+        this._useStreamManager = !!config.shared;
         
         this.config = Object.assign({
             mode: config.mse === false ? 'webrtc' : config.webrtc === false ? 'mse' : this.mode,
@@ -111,6 +117,11 @@ class WebRTCCamera extends VideoRTC {
     set hass(hass) {
         this._hass = hass;
         this.onhass.forEach(fn => fn());
+        
+        // Update stream manager with hass instance
+        if (this._useStreamManager && streamManager) {
+            streamManager.setHass(hass);
+        }
         // if card in vertical stack - `hass` property assign after `onconnect`
         // this.onconnect();
     }
@@ -184,6 +195,18 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
         
+        // For shared stream manager mode
+        if (this._useStreamManager) {
+            if (!this.video) {
+                this.oninit();
+            }
+            this._subscribeToStreamManager();
+            this._bindGlobalActionEvents();
+            this._initializeActionHandlers();
+            this._initializeAudioState();
+            return;
+        }
+        
         super.connectedCallback();
         this._bindGlobalActionEvents();
         this._initializeActionHandlers();
@@ -204,6 +227,12 @@ class WebRTCCamera extends VideoRTC {
         // For clone cards, unsubscribe from source
         if (this._isClone) {
             this._unsubscribeFromSource();
+            return;
+        }
+        
+        // For shared stream manager mode, unsubscribe
+        if (this._useStreamManager) {
+            this._unsubscribeFromStreamManager();
             return;
         }
         
@@ -376,6 +405,92 @@ class WebRTCCamera extends VideoRTC {
      */
     get isCloneCard() {
         return this._isClone;
+    }
+
+    // ========== Stream Manager Methods ==========
+
+    /**
+     * Subscribe to the global stream manager.
+     * The stream manager maintains persistent connections across page navigation.
+     */
+    _subscribeToStreamManager() {
+        if (!this.config) return;
+        
+        // Update the stream manager with current hass instance
+        if (this._hass && streamManager) {
+            streamManager.setHass(this._hass);
+        }
+
+        // Get current stream config
+        const streamConfig = this.config.streams?.[this.streamID] || {
+            url: this.config.url,
+            entity: this.config.entity,
+        };
+
+        if (!streamConfig.url && !streamConfig.entity) {
+            this.setStatus('error', 'No URL or entity');
+            return;
+        }
+
+        // Build config for stream manager
+        const managerConfig = {
+            url: streamConfig.url,
+            entity: streamConfig.entity,
+            mode: streamConfig.mode || this.config.mode || 'webrtc,mse,hls,mjpeg',
+            media: streamConfig.media || this.config.media || 'video,audio',
+            server: this.config.server,
+        };
+
+        this.setStatus('Loading..', '');
+
+        // Subscribe to the stream manager
+        this._streamManagerUnsubscribe = streamManager.subscribe(managerConfig, (stream, status, mode) => {
+            this._onStreamManagerUpdate(stream, status, mode);
+        });
+    }
+
+    /**
+     * Unsubscribe from the stream manager.
+     */
+    _unsubscribeFromStreamManager() {
+        if (this._streamManagerUnsubscribe) {
+            this._streamManagerUnsubscribe();
+            this._streamManagerUnsubscribe = null;
+        }
+    }
+
+    /**
+     * Handle stream updates from the stream manager.
+     * @param {MediaStream|null} stream 
+     * @param {string} status - 'connecting', 'connected', 'disconnected', 'error'
+     * @param {string|null} mode - 'webrtc', 'mse', 'hls', 'mjpeg'
+     */
+    _onStreamManagerUpdate(stream, status, mode) {
+        if (!this.video) return;
+
+        switch (status) {
+            case 'connecting':
+                this.setStatus('Loading...', '');
+                break;
+                
+            case 'connected':
+                if (stream) {
+                    this.video.srcObject = stream;
+                    this.setStatus(mode?.toUpperCase() || 'SHARED', this.config.title || '');
+                    this.play();
+                    // Update registry for other cards that might clone this one
+                    this._updateRegisteredStream();
+                }
+                break;
+                
+            case 'disconnected':
+                this.setStatus('Reconnecting...', '');
+                break;
+                
+            case 'error':
+                this.setStatus('error', 'Stream failed');
+                break;
+        }
     }
 
     // ========== End Stream Sharing Methods ==========

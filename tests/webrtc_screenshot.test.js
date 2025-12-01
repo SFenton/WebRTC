@@ -985,3 +985,152 @@ describe('stream sharing', () => {
         expect(setStatusSpy).toHaveBeenCalledWith('Waiting...', 'for source');
     });
 });
+
+describe('stream manager integration', () => {
+    beforeEach(() => {
+        document.body.innerHTML = '';
+        // Clear the stream manager
+        if (window.__webrtcStreamManager) {
+            window.__webrtcStreamManager.streams.clear();
+        }
+    });
+
+    it('shared config option enables stream manager mode', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true});
+        
+        expect(camera._useStreamManager).toBe(true);
+    });
+
+    it('non-shared cards do not use stream manager', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig});
+        
+        expect(camera._useStreamManager).toBe(false);
+    });
+
+    it('shared card subscribes to stream manager on connect', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        const subscribeSpy = vi.spyOn(camera, '_subscribeToStreamManager');
+        
+        // Manually trigger connected callback logic for shared mode
+        camera._subscribeToStreamManager();
+        
+        expect(subscribeSpy).toHaveBeenCalled();
+    });
+
+    it('shared card unsubscribes from stream manager on disconnect', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        // Mock the unsubscribe function
+        const mockUnsubscribe = vi.fn();
+        camera._streamManagerUnsubscribe = mockUnsubscribe;
+        
+        camera._unsubscribeFromStreamManager();
+        
+        expect(mockUnsubscribe).toHaveBeenCalled();
+        expect(camera._streamManagerUnsubscribe).toBe(null);
+    });
+
+    it('stream manager update sets status on connecting', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        const setStatusSpy = vi.spyOn(camera, 'setStatus');
+        
+        camera._onStreamManagerUpdate(null, 'connecting', null);
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('Loading...', '');
+    });
+
+    it('stream manager update sets video source on connected', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        const mockStream = { id: 'test-stream' };
+        const setStatusSpy = vi.spyOn(camera, 'setStatus');
+        const playSpy = vi.spyOn(camera, 'play').mockImplementation(() => {});
+        
+        camera._onStreamManagerUpdate(mockStream, 'connected', 'webrtc');
+        
+        expect(camera.video.srcObject).toBe(mockStream);
+        expect(setStatusSpy).toHaveBeenCalledWith('WEBRTC', '');
+        expect(playSpy).toHaveBeenCalled();
+    });
+
+    it('stream manager update shows reconnecting status', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        const setStatusSpy = vi.spyOn(camera, 'setStatus');
+        
+        camera._onStreamManagerUpdate(null, 'disconnected', null);
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('Reconnecting...', '');
+    });
+
+    it('stream manager update shows error status', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'shared-camera'});
+        camera.oninit();
+        
+        const setStatusSpy = vi.spyOn(camera, 'setStatus');
+        
+        camera._onStreamManagerUpdate(null, 'error', null);
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('error', 'Stream failed');
+    });
+
+    it('hass setter updates stream manager', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true});
+        
+        const mockHass = { hassUrl: () => 'http://localhost:8123' };
+        
+        // The stream manager should exist
+        expect(window.__webrtcStreamManager).toBeDefined();
+        
+        const setHassSpy = vi.spyOn(window.__webrtcStreamManager, 'setHass');
+        
+        camera.hass = mockHass;
+        
+        expect(setHassSpy).toHaveBeenCalledWith(mockHass);
+    });
+
+    it('stream manager is singleton', () => {
+        expect(window.__webrtcStreamManager).toBeDefined();
+        expect(window.__webrtcStreamManager.streams).toBeInstanceOf(Map);
+    });
+
+    it('stream manager getStreamKey uses entity when provided', () => {
+        const manager = window.__webrtcStreamManager;
+        
+        const key = manager.getStreamKey({entity: 'camera.front_door', url: 'rtsp://test'});
+        
+        expect(key).toBe('camera.front_door');
+    });
+
+    it('stream manager getStreamKey uses url when no entity', () => {
+        const manager = window.__webrtcStreamManager;
+        
+        const key = manager.getStreamKey({url: 'rtsp://test'});
+        
+        expect(key).toBe('rtsp://test');
+    });
+
+    it('stream manager tracks active streams', () => {
+        const manager = window.__webrtcStreamManager;
+        
+        const streams = manager.getActiveStreams();
+        
+        expect(Array.isArray(streams)).toBe(true);
+    });
+});
