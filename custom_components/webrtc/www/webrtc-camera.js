@@ -188,6 +188,7 @@ class WebRTCCamera extends VideoRTC {
             if (!this.video) {
                 this.oninit();
             }
+            this._updateStreamStatus('connecting');
             this._subscribeToSource();
             this._bindGlobalActionEvents();
             this._initializeActionHandlers();
@@ -200,6 +201,7 @@ class WebRTCCamera extends VideoRTC {
             if (!this.video) {
                 this.oninit();
             }
+            this._updateStreamStatus('connecting');
             this._subscribeToStreamManager();
             this._bindGlobalActionEvents();
             this._initializeActionHandlers();
@@ -392,10 +394,12 @@ class WebRTCCamera extends VideoRTC {
         if (stream) {
             this.video.srcObject = stream;
             this.setStatus('CLONE', this.config.title || '');
+            this._updateStreamStatus('connected');
             this.play();
         } else {
             this.video.srcObject = null;
             this.setStatus('Waiting...', '');
+            this._updateStreamStatus('connecting');
         }
     }
 
@@ -442,6 +446,7 @@ class WebRTCCamera extends VideoRTC {
         };
 
         this.setStatus('Loading..', '');
+        this._updateStreamStatus('connecting');
 
         // Subscribe to the stream manager
         this._streamManagerUnsubscribe = streamManager.subscribe(managerConfig, (stream, status, mode) => {
@@ -468,6 +473,9 @@ class WebRTCCamera extends VideoRTC {
     _onStreamManagerUpdate(stream, status, mode) {
         if (!this.video) return;
 
+        // Update data attribute for CSS targeting (spinners, etc.)
+        this._updateStreamStatus(status);
+
         switch (status) {
             case 'connecting':
                 this.setStatus('Loading...', '');
@@ -491,6 +499,15 @@ class WebRTCCamera extends VideoRTC {
                 this.setStatus('error', 'Stream failed');
                 break;
         }
+    }
+
+    /**
+     * Update the data-stream-status attribute for CSS targeting.
+     * Allows external CSS (card_mod) to show spinners, overlays, etc. based on connection state.
+     * @param {string} status - 'connecting', 'connected', 'disconnected', 'error'
+     */
+    _updateStreamStatus(status) {
+        this.setAttribute('data-stream-status', status);
     }
 
     // ========== End Stream Sharing Methods ==========
@@ -742,6 +759,7 @@ class WebRTCCamera extends VideoRTC {
         if (divMode === 'Loading..') return;
 
         this.setStatus('Loading..');
+        this._updateStreamStatus('connecting');
 
         this.hass.callWS({
             type: 'auth/sign_path', path: '/api/webrtc/ws'
@@ -769,9 +787,11 @@ class WebRTCCamera extends VideoRTC {
                 this.setStatus('Loading...');
             } else {
                 this.setStatus('error', 'unable to connect');
+                this._updateStreamStatus('error');
             }
         }).catch(er => {
             this.setStatus('error', er);
+            this._updateStreamStatus('error');
         });
     }
 
@@ -788,6 +808,7 @@ class WebRTCCamera extends VideoRTC {
                 case 'mp4':
                 case 'mjpeg':
                     this.setStatus(msg.type.toUpperCase(), this.config.title || '');
+                    this._updateStreamStatus('connected');
                     // Update registry when stream type is known
                     this._updateRegisteredStream();
                     break;
@@ -802,6 +823,7 @@ class WebRTCCamera extends VideoRTC {
 
         if (this.pcState !== WebSocket.CLOSED) {
             this.setStatus('RTC', this.config.title || '');
+            this._updateStreamStatus('connected');
             // Update registry for WebRTC streams
             this._updateRegisteredStream();
         }

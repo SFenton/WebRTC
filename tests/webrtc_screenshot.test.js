@@ -1133,4 +1133,66 @@ describe('stream manager integration', () => {
         
         expect(Array.isArray(streams)).toBe(true);
     });
+
+    it('sets data-stream-status attribute to connecting on subscribe', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'status-test'});
+        camera.oninit();
+        
+        // Simulate the initial connect
+        camera._updateStreamStatus('connecting');
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('connecting');
+    });
+
+    it('sets data-stream-status attribute to connected when stream ready', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'status-test'});
+        camera.oninit();
+        
+        const mockStream = { id: 'test-stream' };
+        vi.spyOn(camera, 'play').mockImplementation(() => {});
+        
+        camera._onStreamManagerUpdate(mockStream, 'connected', 'webrtc');
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('connected');
+    });
+
+    it('sets data-stream-status attribute to disconnected on connection loss', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'status-test'});
+        camera.oninit();
+        
+        camera._onStreamManagerUpdate(null, 'disconnected', null);
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('disconnected');
+    });
+
+    it('sets data-stream-status attribute to error on failure', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({...baseConfig, shared: true, card_id: 'status-test'});
+        camera.oninit();
+        
+        camera._onStreamManagerUpdate(null, 'error', null);
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('error');
+    });
+
+    it('clone card sets data-stream-status on source stream update', () => {
+        const camera = document.createElement(CARD_TAG);
+        camera.setConfig({source: 'primary-card', card_id: 'clone-status-test'});
+        camera.oninit();
+        
+        // Test connected state
+        const mockStream = { id: 'test-stream' };
+        vi.spyOn(camera, 'play').mockImplementation(() => {});
+        camera._onSourceStreamUpdated(mockStream);
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('connected');
+        
+        // Test waiting state
+        camera._onSourceStreamUpdated(null);
+        
+        expect(camera.getAttribute('data-stream-status')).toBe('connecting');
+    });
 });
