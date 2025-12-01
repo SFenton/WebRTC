@@ -504,10 +504,18 @@ class WebRTCCamera extends VideoRTC {
     /**
      * Update the data-stream-status attribute for CSS targeting.
      * Allows external CSS (card_mod) to show spinners, overlays, etc. based on connection state.
+     * Sets attribute on both the host element and the inner ha-card for styling flexibility.
      * @param {string} status - 'connecting', 'connected', 'disconnected', 'error'
      */
     _updateStreamStatus(status) {
+        // Set on host element for external CSS (card_mod on parent containers)
         this.setAttribute('data-stream-status', status);
+        
+        // Also set on inner ha-card for shadow DOM styling
+        const card = this.shadowRoot?.querySelector('ha-card');
+        if (card) {
+            card.setAttribute('data-stream-status', status);
+        }
     }
 
     // ========== End Stream Sharing Methods ==========
@@ -869,6 +877,29 @@ class WebRTCCamera extends VideoRTC {
                 cursor: pointer;
                 opacity: 0.6;
                 pointer-events: auto;
+            }
+            /* Loading spinner for stream status */
+            @keyframes webrtc-spin {
+                to { transform: rotate(360deg); }
+            }
+            ha-card[data-stream-status="connecting"]::after,
+            ha-card[data-stream-status="disconnected"]::after {
+                content: "";
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 40px;
+                height: 40px;
+                margin: -20px 0 0 -20px;
+                border: 4px solid rgba(255,255,255,0.3);
+                border-top-color: white;
+                border-radius: 50%;
+                animation: webrtc-spin 1s linear infinite;
+                z-index: 10;
+                pointer-events: none;
+            }
+            ha-card[data-stream-status="connected"]::after {
+                display: none;
             }
         </style>
         <ha-card class="card">
