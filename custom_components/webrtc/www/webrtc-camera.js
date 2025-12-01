@@ -901,6 +901,19 @@ class WebRTCCamera extends VideoRTC {
             ha-card[data-stream-status="disconnected"] .spinner {
                 display: block;
             }
+            /* Label overlay */
+            .label {
+                position: absolute;
+                left: 16px;
+                bottom: 16px;
+                font-size: 13px;
+                line-height: 1.2;
+                font-weight: 600;
+                color: white;
+                pointer-events: none;
+                z-index: 5;
+                text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+            }
         </style>
         <ha-card class="card">
             <div class="player">
@@ -911,6 +924,7 @@ class WebRTCCamera extends VideoRTC {
                 <div class="mode"></div>
             </div>
             <div class="spinner"></div>
+            <div class="label"></div>
         </ha-card>
         `;
 
@@ -922,6 +936,11 @@ class WebRTCCamera extends VideoRTC {
 
         if (this.config.muted) this.video.muted = true;
         if (this.config.poster_remote) this.video.poster = this.config.poster;
+        
+        // Set label if configured
+        if (this.config.label) {
+            this.querySelector('.label').textContent = this.config.label;
+        }
     }
 
     renderDigitalPTZ() {
