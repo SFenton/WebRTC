@@ -2,17 +2,31 @@
 import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 
+/**
+ * Global stream registry for sharing streams between cards.
+ * Allows multiple cards to display the same stream without multiple connections.
+ * @type {Map<string, {stream: MediaStream|null, video: HTMLVideoElement, subscribers: Set<WebRTCCamera>, owner: WebRTCCamera}>}
+ */
+if (typeof window !== 'undefined' && !window.__webrtcStreams) {
+    window.__webrtcStreams = new Map();
+}
+
 class WebRTCCamera extends VideoRTC {
     constructor() {
         super();
         this._globalActionBindings = null;
+        this._isClone = false;
+        this._sourceCardId = null;
     }
     /**
      * Step 1. Called by the Hass, when config changed.
      * @param {Object} config
      */
     setConfig(config) {
-        if (!config.url && !config.entity && !config.streams) throw new Error('Missing `url` or `entity` or `streams`');
+        // Allow clone cards that only have a source reference
+        if (!config.source && !config.url && !config.entity && !config.streams) {
+            throw new Error('Missing `url` or `entity` or `streams` or `source`');
+        }
 
         if (config.background) this.background = config.background;
 
@@ -25,6 +39,8 @@ class WebRTCCamera extends VideoRTC {
          *     entity: string,
          *     mode: string,
          *     media: string,
+         *
+         *     source: string,
          *
          *     streams: Array<{
          *         name: string,
@@ -40,6 +56,7 @@ class WebRTCCamera extends VideoRTC {
          *     muted: boolean,
          *     intersection: number,
          *     ui: boolean,
+         *     controls: boolean,
          *     style: string,
          *     background: boolean,
          *
@@ -69,10 +86,15 @@ class WebRTCCamera extends VideoRTC {
          *     hold_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
          * }} config
          */
+        
+        // Check if this is a clone card
+        this._isClone = !!config.source;
+        this._sourceCardId = config.source || null;
+        
         this.config = Object.assign({
             mode: config.mse === false ? 'webrtc' : config.webrtc === false ? 'mse' : this.mode,
             media: this.media,
-            streams: [{url: config.url, entity: config.entity}],
+            streams: config.source ? [] : [{url: config.url, entity: config.entity}],
             poster_remote: config.poster && (config.poster.indexOf('://') > 0 || config.poster.charAt(0) === '/'),
         }, config);
 
@@ -122,6 +144,11 @@ class WebRTCCamera extends VideoRTC {
 
     /** @param reload {boolean} */
     nextStream(reload) {
+        // Clone cards don't have their own streams
+        if (this._isClone || !this.config.streams || this.config.streams.length === 0) {
+            return;
+        }
+        
         this.streamID = (this.streamID + 1) % this.config.streams.length;
 
         const stream = this.config.streams[this.streamID];
@@ -138,21 +165,53 @@ class WebRTCCamera extends VideoRTC {
 
     /** @return {string} */
     get streamName() {
+        if (this._isClone) return 'Clone';
+        if (!this.config.streams || this.config.streams.length === 0) return '';
         return this.config.streams[this.streamID].name || `S${this.streamID}`;
     }
 
     connectedCallback() {
+        // For clone cards, handle subscription instead of normal connection
+        if (this._isClone) {
+            // Still need to initialize the video element if not done
+            if (!this.video) {
+                this.oninit();
+            }
+            this._subscribeToSource();
+            this._bindGlobalActionEvents();
+            this._initializeActionHandlers();
+            this._initializeAudioState();
+            return;
+        }
+        
         super.connectedCallback();
         this._bindGlobalActionEvents();
         this._initializeActionHandlers();
         // Emit initial mute state (will set body class if muted)
         this._initializeAudioState();
+        
+        // Register as stream owner for sharing
+        if (this.config?.id) {
+            this._registerAsStreamOwner();
+        }
     }
 
     disconnectedCallback() {
         this._unbindGlobalActionEvents();
         this._cleanupActionHandlers();
         this._cleanupBodyMuteClass();
+        
+        // For clone cards, unsubscribe from source
+        if (this._isClone) {
+            this._unsubscribeFromSource();
+            return;
+        }
+        
+        // For primary cards, unregister from registry
+        if (this.config?.id) {
+            this._unregisterAsStreamOwner();
+        }
+        
         super.disconnectedCallback();
     }
     
@@ -168,6 +227,158 @@ class WebRTCCamera extends VideoRTC {
             document.body.classList.remove(`webrtc-unmuted-${cardId}`);
         }
     }
+
+    // ========== Stream Sharing Methods ==========
+
+    /**
+     * Get the global stream registry.
+     * @returns {Map<string, {stream: MediaStream|null, video: HTMLVideoElement, subscribers: Set<WebRTCCamera>, owner: WebRTCCamera}>}
+     */
+    static get streamRegistry() {
+        if (typeof window === 'undefined') return new Map();
+        if (!window.__webrtcStreams) window.__webrtcStreams = new Map();
+        return window.__webrtcStreams;
+    }
+
+    /**
+     * Register this card as a stream owner in the global registry.
+     * Called when a primary card (non-clone) establishes a connection.
+     */
+    _registerAsStreamOwner() {
+        const cardId = this.config?.id;
+        if (!cardId) return;
+
+        const registry = WebRTCCamera.streamRegistry;
+        
+        // Check if already registered
+        if (registry.has(cardId)) {
+            const existing = registry.get(cardId);
+            // If we're the existing owner, just update
+            if (existing.owner === this) {
+                existing.video = this.video;
+                existing.stream = this.video?.srcObject || null;
+                return;
+            }
+            // Someone else owns it - don't overwrite
+            return;
+        }
+
+        registry.set(cardId, {
+            stream: this.video?.srcObject || null,
+            video: this.video,
+            subscribers: new Set(),
+            owner: this,
+        });
+    }
+
+    /**
+     * Update the registered stream when video source changes.
+     * Called when stream becomes available.
+     */
+    _updateRegisteredStream() {
+        const cardId = this.config?.id;
+        if (!cardId) return;
+
+        const registry = WebRTCCamera.streamRegistry;
+        const entry = registry.get(cardId);
+        
+        if (entry && entry.owner === this) {
+            const newStream = this.video?.srcObject || null;
+            entry.stream = newStream;
+            entry.video = this.video;
+            
+            // Notify all subscribers that stream is available
+            entry.subscribers.forEach(subscriber => {
+                subscriber._onSourceStreamUpdated(newStream);
+            });
+        }
+    }
+
+    /**
+     * Unregister this card from the stream registry.
+     * Called when a primary card disconnects.
+     */
+    _unregisterAsStreamOwner() {
+        const cardId = this.config?.id;
+        if (!cardId) return;
+
+        const registry = WebRTCCamera.streamRegistry;
+        const entry = registry.get(cardId);
+        
+        if (entry && entry.owner === this) {
+            // Notify subscribers that stream is going away
+            entry.subscribers.forEach(subscriber => {
+                subscriber._onSourceStreamUpdated(null);
+            });
+            registry.delete(cardId);
+        }
+    }
+
+    /**
+     * Subscribe to another card's stream (for clone cards).
+     * @returns {boolean} True if successfully subscribed
+     */
+    _subscribeToSource() {
+        if (!this._sourceCardId) return false;
+
+        const registry = WebRTCCamera.streamRegistry;
+        const entry = registry.get(this._sourceCardId);
+        
+        if (!entry) {
+            // Source not available yet - we'll retry on connect
+            return false;
+        }
+
+        entry.subscribers.add(this);
+        
+        // If stream is already available, use it
+        if (entry.stream) {
+            this._onSourceStreamUpdated(entry.stream);
+        }
+        
+        return true;
+    }
+
+    /**
+     * Unsubscribe from the source stream.
+     */
+    _unsubscribeFromSource() {
+        if (!this._sourceCardId) return;
+
+        const registry = WebRTCCamera.streamRegistry;
+        const entry = registry.get(this._sourceCardId);
+        
+        if (entry) {
+            entry.subscribers.delete(this);
+        }
+    }
+
+    /**
+     * Called when the source stream is updated (for clone cards).
+     * @param {MediaStream|null} stream
+     */
+    _onSourceStreamUpdated(stream) {
+        if (!this.video) return;
+        
+        if (stream) {
+            this.video.srcObject = stream;
+            this.setStatus('CLONE', this.config.title || '');
+            this.play();
+        } else {
+            this.video.srcObject = null;
+            this.setStatus('Waiting...', '');
+        }
+    }
+
+    /**
+     * Check if this card is a clone of another.
+     * @returns {boolean}
+     */
+    get isCloneCard() {
+        return this._isClone;
+    }
+
+    // ========== End Stream Sharing Methods ==========
 
     /**
      * Initialize action handlers for tap_action, double_tap_action, and hold_action.
@@ -364,6 +575,12 @@ class WebRTCCamera extends VideoRTC {
 
     oninit() {
         super.oninit();
+        
+        // Allow disabling native video controls via config
+        if (this.config.controls === false && this.video) {
+            this.video.controls = false;
+        }
+        
         this.renderMain();
         this.renderDigitalPTZ();
         this.renderPTZ();
@@ -394,6 +611,15 @@ class WebRTCCamera extends VideoRTC {
     }
 
     onconnect() {
+        // Clone cards don't establish their own connection
+        if (this._isClone) {
+            // Try to subscribe to source if not already subscribed
+            if (!this._subscribeToSource()) {
+                this.setStatus('Waiting...', 'for source');
+            }
+            return false;
+        }
+        
         if (!this.config || !this.hass) return false;
         if (!this.isConnected || this.ws || this.pc) return false;
 
@@ -447,6 +673,8 @@ class WebRTCCamera extends VideoRTC {
                 case 'mp4':
                 case 'mjpeg':
                     this.setStatus(msg.type.toUpperCase(), this.config.title || '');
+                    // Update registry when stream type is known
+                    this._updateRegisteredStream();
                     break;
             }
         };
@@ -459,6 +687,8 @@ class WebRTCCamera extends VideoRTC {
 
         if (this.pcState !== WebSocket.CLOSED) {
             this.setStatus('RTC', this.config.title || '');
+            // Update registry for WebRTC streams
+            this._updateRegisteredStream();
         }
     }
 

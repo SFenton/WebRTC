@@ -754,3 +754,234 @@ describe('webrtc-camera tap/hold action handlers', () => {
         window.removeEventListener('hass-action', hassActionHandler);
     });
 });
+
+describe('stream sharing', () => {
+    beforeEach(() => {
+        document.body.innerHTML = '';
+        // Clear the stream registry before each test
+        if (window.__webrtcStreams) {
+            window.__webrtcStreams.clear();
+        }
+    });
+
+    it('allows config with source instead of url', () => {
+        const el = document.createElement(CARD_TAG);
+        // Should not throw with source
+        expect(() => el.setConfig({source: 'primary-card', card_id: 'clone-card'})).not.toThrow();
+    });
+
+    it('throws error without url, entity, streams, or source', () => {
+        const el = document.createElement(CARD_TAG);
+        expect(() => el.setConfig({})).toThrow('Missing `url` or `entity` or `streams` or `source`');
+    });
+
+    it('marks card as clone when source is provided', () => {
+        const el = document.createElement(CARD_TAG);
+        el.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        expect(el._isClone).toBe(true);
+        expect(el._sourceCardId).toBe('primary-card');
+    });
+
+    it('marks card as non-clone when url is provided', () => {
+        const camera = createCamera({card_id: 'primary-card'});
+        expect(camera._isClone).toBe(false);
+        expect(camera._sourceCardId).toBeNull();
+    });
+
+    it('primary card registers in stream registry on connect', () => {
+        const camera = createCamera({card_id: 'primary-card'});
+        
+        // Simulate connectedCallback behavior
+        camera._registerAsStreamOwner();
+        
+        const registry = window.__webrtcStreams;
+        expect(registry.has('primary-card')).toBe(true);
+        expect(registry.get('primary-card').owner).toBe(camera);
+    });
+
+    it('primary card unregisters from registry on disconnect', () => {
+        const camera = createCamera({card_id: 'primary-card'});
+        camera._registerAsStreamOwner();
+        
+        expect(window.__webrtcStreams.has('primary-card')).toBe(true);
+        
+        camera._unregisterAsStreamOwner();
+        
+        expect(window.__webrtcStreams.has('primary-card')).toBe(false);
+    });
+
+    it('clone card subscribes to source stream', () => {
+        // Create and register primary card
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        // Create clone card
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        
+        // Subscribe to source
+        const result = clone._subscribeToSource();
+        
+        expect(result).toBe(true);
+        expect(window.__webrtcStreams.get('primary-card').subscribers.has(clone)).toBe(true);
+    });
+
+    it('clone card fails to subscribe if source not available', () => {
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'nonexistent-card', card_id: 'clone-card'});
+        clone.oninit();
+        
+        const result = clone._subscribeToSource();
+        
+        expect(result).toBe(false);
+    });
+
+    it('clone card unsubscribes on disconnect', () => {
+        // Create and register primary card
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        // Create and subscribe clone card
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        clone._subscribeToSource();
+        
+        expect(window.__webrtcStreams.get('primary-card').subscribers.has(clone)).toBe(true);
+        
+        // Unsubscribe
+        clone._unsubscribeFromSource();
+        
+        expect(window.__webrtcStreams.get('primary-card').subscribers.has(clone)).toBe(false);
+    });
+
+    it('clone cards receive stream updates from primary', () => {
+        // Create and register primary card
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        // Create and subscribe clone card
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        clone._subscribeToSource();
+        
+        // Create a mock MediaStream
+        const mockStream = { id: 'mock-stream' };
+        primary.video.srcObject = mockStream;
+        
+        // Trigger stream update
+        primary._updateRegisteredStream();
+        
+        // Clone should have received the stream
+        expect(clone.video.srcObject).toBe(mockStream);
+    });
+
+    it('clone card sets status to CLONE when stream is received', () => {
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        clone._subscribeToSource();
+        
+        const setStatusSpy = vi.spyOn(clone, 'setStatus');
+        
+        // Simulate stream update
+        clone._onSourceStreamUpdated({ id: 'mock-stream' });
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('CLONE', '');
+    });
+
+    it('clone card sets status to Waiting when stream is null', () => {
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        
+        const setStatusSpy = vi.spyOn(clone, 'setStatus');
+        
+        clone._onSourceStreamUpdated(null);
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('Waiting...', '');
+    });
+
+    it('multiple clones can subscribe to same source', () => {
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        const clone1 = document.createElement(CARD_TAG);
+        clone1.setConfig({source: 'primary-card', card_id: 'clone-1'});
+        clone1.oninit();
+        clone1._subscribeToSource();
+        
+        const clone2 = document.createElement(CARD_TAG);
+        clone2.setConfig({source: 'primary-card', card_id: 'clone-2'});
+        clone2.oninit();
+        clone2._subscribeToSource();
+        
+        const subscribers = window.__webrtcStreams.get('primary-card').subscribers;
+        expect(subscribers.size).toBe(2);
+        expect(subscribers.has(clone1)).toBe(true);
+        expect(subscribers.has(clone2)).toBe(true);
+    });
+
+    it('primary disconnection notifies all clones with null stream', () => {
+        const primary = createCamera({card_id: 'primary-card'});
+        primary._registerAsStreamOwner();
+        
+        const clone1 = document.createElement(CARD_TAG);
+        clone1.setConfig({source: 'primary-card', card_id: 'clone-1'});
+        clone1.oninit();
+        clone1._subscribeToSource();
+        
+        const clone2 = document.createElement(CARD_TAG);
+        clone2.setConfig({source: 'primary-card', card_id: 'clone-2'});
+        clone2.oninit();
+        clone2._subscribeToSource();
+        
+        // Set a stream on both
+        const mockStream = { id: 'mock' };
+        clone1.video.srcObject = mockStream;
+        clone2.video.srcObject = mockStream;
+        
+        // Primary disconnects
+        primary._unregisterAsStreamOwner();
+        
+        // Both clones should have null srcObject now
+        expect(clone1.video.srcObject).toBeNull();
+        expect(clone2.video.srcObject).toBeNull();
+    });
+
+    it('isCloneCard getter returns correct value', () => {
+        const primary = createCamera({card_id: 'primary-card'});
+        expect(primary.isCloneCard).toBe(false);
+        
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        expect(clone.isCloneCard).toBe(true);
+    });
+
+    it('onconnect returns false for clone cards', () => {
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'primary-card', card_id: 'clone-card'});
+        clone.oninit();
+        
+        const result = clone.onconnect();
+        
+        expect(result).toBe(false);
+    });
+
+    it('clone card sets Waiting status when source not found on connect', () => {
+        const clone = document.createElement(CARD_TAG);
+        clone.setConfig({source: 'nonexistent-card', card_id: 'clone-card'});
+        clone.oninit();
+        
+        const setStatusSpy = vi.spyOn(clone, 'setStatus');
+        
+        clone.onconnect();
+        
+        expect(setStatusSpy).toHaveBeenCalledWith('Waiting...', 'for source');
+    });
+});
