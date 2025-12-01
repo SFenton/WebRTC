@@ -63,6 +63,10 @@ class WebRTCCamera extends VideoRTC {
          *         data_left, data_up, data_right, data_down, data_zoom_in, data_zoom_out, data_home
          *     },
          *     shortcuts:Array<{ name:string, icon:string }>,
+         *
+         *     tap_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
+         *     double_tap_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
+         *     hold_action: {action: string, entity?: string, service?: string, data?: object, navigation_path?: string, url_path?: string},
          * }} config
          */
         this.config = Object.assign({
@@ -140,12 +144,14 @@ class WebRTCCamera extends VideoRTC {
     connectedCallback() {
         super.connectedCallback();
         this._bindGlobalActionEvents();
+        this._initializeActionHandlers();
         // Emit initial mute state (will set body class if muted)
         this._initializeAudioState();
     }
 
     disconnectedCallback() {
         this._unbindGlobalActionEvents();
+        this._cleanupActionHandlers();
         this._cleanupBodyMuteClass();
         super.disconnectedCallback();
     }
@@ -161,6 +167,171 @@ class WebRTCCamera extends VideoRTC {
             document.body.classList.remove(`webrtc-muted-${cardId}`);
             document.body.classList.remove(`webrtc-unmuted-${cardId}`);
         }
+    }
+
+    /**
+     * Initialize action handlers for tap_action, double_tap_action, and hold_action.
+     * Follows Bubble Card's pattern for dispatching hass-action events.
+     */
+    _initializeActionHandlers() {
+        if (this._actionHandlersInitialized) return;
+        
+        // Only set up handlers if any action is configured
+        const { tap_action, double_tap_action, hold_action } = this.config || {};
+        if (!tap_action && !double_tap_action && !hold_action) return;
+
+        // State for gesture detection
+        this._actionState = {
+            startX: 0,
+            startY: 0,
+            holdTimer: null,
+            lastTapTime: 0,
+            tapCount: 0,
+            tapTimer: null,
+            holdTriggered: false,
+        };
+
+        // Bind event handlers
+        this._handlePointerDown = this._onPointerDown.bind(this);
+        this._handlePointerUp = this._onPointerUp.bind(this);
+        this._handlePointerCancel = this._onPointerCancel.bind(this);
+
+        this.addEventListener('pointerdown', this._handlePointerDown);
+        this.addEventListener('pointerup', this._handlePointerUp);
+        this.addEventListener('pointercancel', this._handlePointerCancel);
+        this.addEventListener('pointerleave', this._handlePointerCancel);
+
+        // Prevent context menu on long press (for hold action)
+        if (hold_action) {
+            this._handleContextMenu = e => e.preventDefault();
+            this.addEventListener('contextmenu', this._handleContextMenu);
+        }
+
+        this._actionHandlersInitialized = true;
+    }
+
+    _cleanupActionHandlers() {
+        if (!this._actionHandlersInitialized) return;
+
+        if (this._handlePointerDown) {
+            this.removeEventListener('pointerdown', this._handlePointerDown);
+        }
+        if (this._handlePointerUp) {
+            this.removeEventListener('pointerup', this._handlePointerUp);
+        }
+        if (this._handlePointerCancel) {
+            this.removeEventListener('pointercancel', this._handlePointerCancel);
+            this.removeEventListener('pointerleave', this._handlePointerCancel);
+        }
+        if (this._handleContextMenu) {
+            this.removeEventListener('contextmenu', this._handleContextMenu);
+        }
+
+        if (this._actionState) {
+            clearTimeout(this._actionState.holdTimer);
+            clearTimeout(this._actionState.tapTimer);
+        }
+
+        this._actionState = null;
+        this._actionHandlersInitialized = false;
+    }
+
+    _onPointerDown(event) {
+        // Ignore right-clicks
+        if (event.button !== 0) return;
+        
+        const state = this._actionState;
+        if (!state) return;
+
+        state.startX = event.clientX;
+        state.startY = event.clientY;
+        state.holdTriggered = false;
+
+        // Set up hold timer
+        const holdAction = this.config?.hold_action;
+        if (holdAction && holdAction.action !== 'none') {
+            state.holdTimer = setTimeout(() => {
+                state.holdTriggered = true;
+                this._executeAction('hold');
+            }, 500); // 500ms for hold
+        }
+    }
+
+    _onPointerUp(event) {
+        const state = this._actionState;
+        if (!state) return;
+
+        // Clear hold timer
+        clearTimeout(state.holdTimer);
+
+        // If hold was triggered, don't also trigger tap
+        if (state.holdTriggered) return;
+
+        // Check if pointer moved significantly (cancel if dragged)
+        const dx = event.clientX - state.startX;
+        const dy = event.clientY - state.startY;
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) return;
+
+        const now = Date.now();
+        const doubleTapAction = this.config?.double_tap_action;
+        const tapAction = this.config?.tap_action;
+
+        // Double-tap detection
+        if (doubleTapAction && doubleTapAction.action !== 'none') {
+            if (now - state.lastTapTime < 300) {
+                // Double tap detected
+                clearTimeout(state.tapTimer);
+                state.tapCount = 0;
+                state.lastTapTime = 0;
+                this._executeAction('double_tap');
+                return;
+            }
+            
+            // First tap - wait to see if there's a second
+            state.lastTapTime = now;
+            state.tapTimer = setTimeout(() => {
+                state.lastTapTime = 0;
+                if (tapAction && tapAction.action !== 'none') {
+                    this._executeAction('tap');
+                }
+            }, 300);
+        } else if (tapAction && tapAction.action !== 'none') {
+            // No double-tap configured, execute tap immediately
+            this._executeAction('tap');
+        }
+    }
+
+    _onPointerCancel() {
+        const state = this._actionState;
+        if (!state) return;
+
+        clearTimeout(state.holdTimer);
+        state.holdTriggered = false;
+    }
+
+    /**
+     * Execute an action by dispatching a hass-action event.
+     * @param {'tap'|'double_tap'|'hold'} actionType
+     */
+    _executeAction(actionType) {
+        const actionKey = `${actionType}_action`;
+        const actionConfig = this.config?.[actionKey];
+        if (!actionConfig || actionConfig.action === 'none') return;
+
+        // Build the config object for hass-action
+        // Spread actionConfig first, then set entity fallback if not explicitly provided
+        const hassActionConfig = {
+            ...actionConfig,
+            entity: actionConfig.entity || this.config.entity,
+        };
+
+        // Dispatch hass-action event (this is what HA's frontend listens for)
+        const event = new Event('hass-action', { bubbles: true, composed: true });
+        event.detail = {
+            config: hassActionConfig,
+            action: actionType,
+        };
+        this.dispatchEvent(event);
     }
 
     oninit() {

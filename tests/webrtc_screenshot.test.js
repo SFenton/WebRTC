@@ -324,3 +324,337 @@ describe('webrtc-camera screenshot events', () => {
         expect(spy).not.toHaveBeenCalled();
     });
 });
+
+describe('webrtc-camera tap/hold action handlers', () => {
+    beforeEach(() => {
+        document.body.innerHTML = '';
+    });
+
+    it('dispatches hass-action event on tap when tap_action configured', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {
+                action: 'more-info',
+                entity: 'camera.front_door',
+            },
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        // Simulate pointer down and up (tap gesture)
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+        camera.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        // Allow for immediate tap execution
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).toHaveBeenCalled();
+        const detail = hassActionHandler.mock.calls[0][0].detail;
+        expect(detail.action).toBe('tap');
+        expect(detail.config.action).toBe('more-info');
+        expect(detail.config.entity).toBe('camera.front_door');
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('does not dispatch hass-action when no tap_action configured', async () => {
+        const camera = mountCamera({card_id: 'test-card'});
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+        camera.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).not.toHaveBeenCalled();
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('dispatches hass-action on hold when hold_action configured', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            hold_action: {
+                action: 'call-service',
+                service: 'script.my_script',
+            },
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        // Simulate pointer down and wait for hold timeout
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        // Wait for hold timeout (500ms + buffer)
+        await new Promise(r => setTimeout(r, 550));
+
+        expect(hassActionHandler).toHaveBeenCalled();
+        const detail = hassActionHandler.mock.calls[0][0].detail;
+        expect(detail.action).toBe('hold');
+        expect(detail.config.action).toBe('call-service');
+        expect(detail.config.service).toBe('script.my_script');
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('does not trigger tap after hold is triggered', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'more-info'},
+            hold_action: {action: 'toggle'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        // Wait for hold to trigger
+        await new Promise(r => setTimeout(r, 550));
+
+        // Now release
+        camera.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        // Should have exactly one call (the hold), not two (hold + tap)
+        expect(hassActionHandler).toHaveBeenCalledTimes(1);
+        expect(hassActionHandler.mock.calls[0][0].detail.action).toBe('hold');
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('cancels tap when pointer moves significantly', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'more-info'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+        
+        // Release at a different position (moved more than 10px)
+        camera.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: 150,
+            clientY: 150,
+            bubbles: true,
+        }));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).not.toHaveBeenCalled();
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('dispatches double_tap action on double tap', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'more-info'},
+            double_tap_action: {action: 'navigate', navigation_path: '/cameras'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        // First tap
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        // Second tap quickly
+        await new Promise(r => setTimeout(r, 50));
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).toHaveBeenCalledTimes(1);
+        expect(hassActionHandler.mock.calls[0][0].detail.action).toBe('double_tap');
+        expect(hassActionHandler.mock.calls[0][0].detail.config.action).toBe('navigate');
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('uses config.entity as default when action.entity not specified', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            entity: 'camera.default_entity',
+            streams: [{url: 'front_door', entity: 'camera.default_entity'}],
+            tap_action: {action: 'more-info'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).toHaveBeenCalled();
+        expect(hassActionHandler.mock.calls[0][0].detail.config.entity).toBe('camera.default_entity');
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('ignores right-click for tap actions', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'more-info'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        // Right-click (button: 2)
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 2,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+        camera.dispatchEvent(new PointerEvent('pointerup', {
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).not.toHaveBeenCalled();
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('does not dispatch when action is none', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'none'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {button: 0, clientX: 100, clientY: 100, bubbles: true}));
+        camera.dispatchEvent(new PointerEvent('pointerup', {clientX: 100, clientY: 100, bubbles: true}));
+
+        await new Promise(r => setTimeout(r, 10));
+
+        expect(hassActionHandler).not.toHaveBeenCalled();
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('cleans up action handlers on disconnect', () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            tap_action: {action: 'more-info'},
+        });
+
+        expect(camera._actionHandlersInitialized).toBe(true);
+
+        camera.remove();
+
+        expect(camera._actionHandlersInitialized).toBe(false);
+        expect(camera._actionState).toBe(null);
+    });
+
+    it('cancels hold timer on pointercancel', async () => {
+        const camera = mountCamera({
+            card_id: 'test-card',
+            hold_action: {action: 'toggle'},
+        });
+
+        const hassActionHandler = vi.fn();
+        window.addEventListener('hass-action', hassActionHandler);
+
+        camera.dispatchEvent(new PointerEvent('pointerdown', {
+            button: 0,
+            clientX: 100,
+            clientY: 100,
+            bubbles: true,
+        }));
+
+        // Cancel before hold timeout
+        await new Promise(r => setTimeout(r, 200));
+        camera.dispatchEvent(new PointerEvent('pointercancel', {bubbles: true}));
+
+        // Wait past the hold timeout
+        await new Promise(r => setTimeout(r, 400));
+
+        expect(hassActionHandler).not.toHaveBeenCalled();
+
+        window.removeEventListener('hass-action', hassActionHandler);
+    });
+
+    it('sets body mute classes when connected with card_id', () => {
+        const camera = mountCamera({card_id: 'test-mute-class'});
+        camera.video.muted = true;
+        camera.emitAudioState();
+
+        expect(document.body.classList.contains('webrtc-muted-test-mute-class')).toBe(true);
+        expect(document.body.classList.contains('webrtc-unmuted-test-mute-class')).toBe(false);
+
+        camera.video.muted = false;
+        camera.emitAudioState();
+
+        expect(document.body.classList.contains('webrtc-muted-test-mute-class')).toBe(false);
+        expect(document.body.classList.contains('webrtc-unmuted-test-mute-class')).toBe(true);
+    });
+
+    it('removes body mute classes on disconnect', () => {
+        const camera = mountCamera({card_id: 'cleanup-test'});
+        camera.video.muted = false;
+        camera.emitAudioState();
+
+        expect(document.body.classList.contains('webrtc-unmuted-cleanup-test')).toBe(true);
+
+        camera.remove();
+
+        expect(document.body.classList.contains('webrtc-muted-cleanup-test')).toBe(false);
+        expect(document.body.classList.contains('webrtc-unmuted-cleanup-test')).toBe(false);
+    });
+});
