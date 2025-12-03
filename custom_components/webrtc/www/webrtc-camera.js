@@ -847,6 +847,7 @@ class WebRTCCamera extends VideoRTC {
                 margin: auto;
                 overflow: hidden;
                 position: relative;
+                isolation: isolate; /* Create stacking context to contain z-index */
             }
             ha-icon {
                 color: white;
@@ -894,7 +895,7 @@ class WebRTCCamera extends VideoRTC {
                 border-top-color: white;
                 border-radius: 50%;
                 animation: webrtc-spin 1s linear infinite;
-                z-index: 10;
+                z-index: 2;
                 pointer-events: none;
             }
             ha-card[data-stream-status="connecting"] .loading-spinner,
@@ -911,7 +912,8 @@ class WebRTCCamera extends VideoRTC {
                 font-weight: 600;
                 color: white;
                 pointer-events: none;
-                z-index: 5;
+                z-index: 1;
+                text-shadow: 0 1px 3px rgba(0,0,0,0.5);
             }
         </style>
         <ha-card class="card">
