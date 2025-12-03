@@ -714,6 +714,27 @@ describe('webrtc-camera tap/hold action handlers', () => {
         expect(document.body.classList.contains('webrtc-unmuted-test-mute-class')).toBe(true);
     });
 
+    it('body mute classes update when using handleToggleMuteRequest', () => {
+        const camera = mountCamera({card_id: 'toggle-body-class-test'});
+        camera.video.muted = true;
+        camera.emitAudioState();
+
+        expect(document.body.classList.contains('webrtc-muted-toggle-body-class-test')).toBe(true);
+        expect(document.body.classList.contains('webrtc-unmuted-toggle-body-class-test')).toBe(false);
+
+        // Toggle via handleToggleMuteRequest - should update body classes
+        camera.handleToggleMuteRequest({target_id: 'toggle-body-class-test'});
+
+        expect(document.body.classList.contains('webrtc-muted-toggle-body-class-test')).toBe(false);
+        expect(document.body.classList.contains('webrtc-unmuted-toggle-body-class-test')).toBe(true);
+
+        // Toggle again
+        camera.handleToggleMuteRequest({target_id: 'toggle-body-class-test'});
+
+        expect(document.body.classList.contains('webrtc-muted-toggle-body-class-test')).toBe(true);
+        expect(document.body.classList.contains('webrtc-unmuted-toggle-body-class-test')).toBe(false);
+    });
+
     it('removes body mute classes on disconnect', () => {
         const camera = mountCamera({card_id: 'cleanup-test'});
         camera.video.muted = false;
