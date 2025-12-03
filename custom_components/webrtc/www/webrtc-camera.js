@@ -1321,7 +1321,7 @@ class WebRTCCamera extends VideoRTC {
         const fullscreen = this.querySelector('.fullscreen');
         if (this.requestFullscreen) {
             this.addEventListener('fullscreenchange', () => {
-                fullscreen.icon = document.fullscreenElement ? 'mdi:fullscreen-exit' : 'mdi:fullscreen';
+                fullscreen.setAttribute('icon', document.fullscreenElement ? 'mdi:fullscreen-exit' : 'mdi:fullscreen');
             });
         } else if (video.webkitEnterFullscreen) {
             this.requestFullscreen = () => new Promise((resolve, reject) => {
@@ -1341,11 +1341,11 @@ class WebRTCCamera extends VideoRTC {
         const pip = this.querySelector('.pictureinpicture');
         if (video.requestPictureInPicture) {
             video.addEventListener('enterpictureinpicture', () => {
-                pip.icon = 'mdi:rectangle';
+                pip.setAttribute('icon', 'mdi:rectangle');
                 this.background = true;
             });
             video.addEventListener('leavepictureinpicture', () => {
-                pip.icon = 'mdi:picture-in-picture-bottom-right';
+                pip.setAttribute('icon', 'mdi:picture-in-picture-bottom-right');
                 this.background = this.config.background;
                 this.play();
             });
@@ -1399,7 +1399,7 @@ class WebRTCCamera extends VideoRTC {
             volume.style.display = this.hasAudio ? 'block' : 'none';
         });
         video.addEventListener('volumechange', () => {
-            volume.icon = video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
+            volume.setAttribute('icon', video.muted ? 'mdi:volume-mute' : 'mdi:volume-high');
         });
 
         const stream = this.querySelector('.stream');
