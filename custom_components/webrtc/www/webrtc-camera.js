@@ -1133,6 +1133,7 @@ class WebRTCCamera extends VideoRTC {
         if (!this.video) return;
         this.video.muted = mute;
         this.emitAudioState();
+        this._updateVolumeIcon();
     }
 
     handleToggleMuteRequest(detail = {}) {
@@ -1140,6 +1141,20 @@ class WebRTCCamera extends VideoRTC {
         if (!this.video) return;
         this.video.muted = !this.video.muted;
         this.emitAudioState();
+        this._updateVolumeIcon();
+    }
+
+    /**
+     * Update the volume icon to reflect the current mute state.
+     * Called after mute state changes to ensure UI stays in sync.
+     */
+    _updateVolumeIcon() {
+        if (!this.video || !this.config?.ui) return;
+        const volume = this.querySelector('.volume');
+        if (!volume) return;
+        const newIcon = this.video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
+        volume.icon = newIcon;
+        volume.setAttribute('icon', newIcon);
     }
 
     handleFullscreenRequest(detail = {}) {
@@ -1403,9 +1418,7 @@ class WebRTCCamera extends VideoRTC {
             volume.style.display = this.hasAudio ? 'block' : 'none';
         });
         video.addEventListener('volumechange', () => {
-            const newIcon = video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
-            volume.icon = newIcon;
-            volume.setAttribute('icon', newIcon);
+            this._updateVolumeIcon();
         });
 
         const stream = this.querySelector('.stream');

@@ -184,7 +184,7 @@ describe('webrtc-camera screenshot events', () => {
         // Initial state should be volume-high (unmuted)
         expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-high');
         
-        // Mute the video and trigger volumechange event
+        // Mute the video and trigger volumechange event (simulates browser behavior)
         camera.video.muted = true;
         camera.video.dispatchEvent(new Event('volumechange'));
         
@@ -206,16 +206,37 @@ describe('webrtc-camera screenshot events', () => {
         
         expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-high');
         
-        // Mute via handleMuteRequest
+        // Mute via handleMuteRequest - should update icon directly without needing volumechange event
         camera.handleMuteRequest({target_id: 'popup'}, true);
         
-        // The volumechange event should be fired by setting video.muted
-        // but we need to manually dispatch it in tests since mock video doesn't fire events
-        camera.video.dispatchEvent(new Event('volumechange'));
-        
-        // Both property and attribute should be updated
+        // Icon should be updated immediately by handleMuteRequest
         expect(volumeIcon.icon).toBe('mdi:volume-mute');
         expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-mute');
+        
+        // Unmute via handleMuteRequest
+        camera.handleMuteRequest({target_id: 'popup'}, false);
+        
+        expect(volumeIcon.icon).toBe('mdi:volume-high');
+        expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-high');
+    });
+
+    it('volume icon updates when mute state changes via handleToggleMuteRequest', () => {
+        const camera = createCamera({card_id: 'popup', ui: true});
+        const volumeIcon = camera.shadowRoot.querySelector('.volume');
+        
+        expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-high');
+        
+        // Toggle mute - should update icon directly
+        camera.handleToggleMuteRequest({target_id: 'popup'});
+        
+        expect(volumeIcon.icon).toBe('mdi:volume-mute');
+        expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-mute');
+        
+        // Toggle again
+        camera.handleToggleMuteRequest({target_id: 'popup'});
+        
+        expect(volumeIcon.icon).toBe('mdi:volume-high');
+        expect(volumeIcon.getAttribute('icon')).toBe('mdi:volume-high');
     });
 
     it('global screenshot events only trigger the targeted camera', () => {
