@@ -3,6 +3,9 @@ import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
+// Version identifier for debugging cache issues
+console.log('[WebRTC Camera] Version: 3.9.5-debug');
+
 /**
  * Global stream registry for sharing streams between cards.
  * Allows multiple cards to display the same stream without multiple connections.
@@ -1137,9 +1140,18 @@ class WebRTCCamera extends VideoRTC {
     }
 
     handleToggleMuteRequest(detail = {}) {
-        if (!this.matchesActionTarget(detail)) return;
-        if (!this.video) return;
+        console.log('[WebRTC] handleToggleMuteRequest called', detail);
+        if (!this.matchesActionTarget(detail)) {
+            console.log('[WebRTC] Target mismatch, ignoring');
+            return;
+        }
+        if (!this.video) {
+            console.log('[WebRTC] No video element');
+            return;
+        }
+        const wasMuted = this.video.muted;
         this.video.muted = !this.video.muted;
+        console.log('[WebRTC] Mute toggled:', wasMuted, '->', this.video.muted);
         this.emitAudioState();
         this._updateVolumeIcon();
     }
@@ -1149,10 +1161,13 @@ class WebRTCCamera extends VideoRTC {
      * Called after mute state changes to ensure UI stays in sync.
      */
     _updateVolumeIcon() {
+        console.log('[WebRTC] _updateVolumeIcon called, ui:', this.config?.ui);
         if (!this.video || !this.config?.ui) return;
         const volume = this.querySelector('.volume');
+        console.log('[WebRTC] Volume element:', volume);
         if (!volume) return;
         const newIcon = this.video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
+        console.log('[WebRTC] Setting icon to:', newIcon);
         volume.icon = newIcon;
         volume.setAttribute('icon', newIcon);
     }
@@ -1379,8 +1394,12 @@ class WebRTCCamera extends VideoRTC {
                 this.play();
             } else if (icon === 'mdi:volume-mute') {
                 video.muted = false;
+                this.emitAudioState();
+                this._updateVolumeIcon();
             } else if (icon === 'mdi:volume-high') {
                 video.muted = true;
+                this.emitAudioState();
+                this._updateVolumeIcon();
             } else if (icon === 'mdi:fullscreen') {
                 this.requestFullscreen().catch(console.warn);
             } else if (icon === 'mdi:fullscreen-exit') {
