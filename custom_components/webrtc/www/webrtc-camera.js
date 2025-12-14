@@ -4,7 +4,7 @@ import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
 // Version identifier for debugging cache issues
-console.log('[WebRTC Camera] Version: 3.9.6-mute-debug');
+console.log('[WebRTC Camera] Version: 3.9.8-bubble-sync');
 
 // ========== Debug Logging Infrastructure ==========
 // Stores logs in memory and localStorage for persistence
@@ -55,7 +55,75 @@ if (typeof window !== 'undefined') {
         console.log('[WebRTC-Debug] Logs cleared');
     };
     
-    window.__webrtcLog('INIT', 'Debug logging initialized', { version: '3.9.6-mute-debug' });
+    window.__webrtcLog('INIT', 'Debug logging initialized', { version: '3.9.7-icon-fix' });
+}
+
+/**
+ * Global listener to update Bubble Card button icons when audio state changes.
+ * This works around the limitation that :host-context() CSS doesn't react to
+ * dynamic body class changes.
+ */
+if (typeof window !== 'undefined' && !window.__webrtcAudioStateListener) {
+    window.__webrtcAudioStateListener = true;
+    
+    document.addEventListener('webrtc-audio-state', (event) => {
+        const { target_id, muted } = event.detail || {};
+        if (!target_id) return;
+        
+        window.__webrtcLog?.('BUBBLE_UPDATE', 'Audio state event received', { target_id, muted });
+        
+        // Find all Bubble Card buttons that have a tap_action targeting this camera
+        // We look for bubble-card elements and check their button configuration
+        const bubbleCards = document.querySelectorAll('bubble-card');
+        
+        bubbleCards.forEach(card => {
+            try {
+                // Check if this bubble card targets our camera for toggle-mute
+                const config = card._config || card.config;
+                const buttonAction = config?.button_action;
+                const tapAction = buttonAction?.tap_action;
+                
+                if (tapAction?.action === 'fire-dom-event' && 
+                    tapAction?.event === 'webrtc-toggle-mute' &&
+                    tapAction?.target_id === target_id) {
+                    
+                    window.__webrtcLog?.('BUBBLE_UPDATE', 'Found matching Bubble Card', { 
+                        target_id, 
+                        muted,
+                        cardConfig: config?.name 
+                    });
+                    
+                    // Find the icon element inside the bubble card
+                    const iconContainer = card.shadowRoot?.querySelector('.bubble-icon-container');
+                    const iconElement = card.shadowRoot?.querySelector('.bubble-icon ha-icon, .bubble-icon');
+                    
+                    if (iconContainer) {
+                        // Update background color based on mute state
+                        if (muted) {
+                            iconContainer.style.backgroundColor = '';  // Reset to default (red/original)
+                        } else {
+                            iconContainer.style.backgroundColor = 'green';
+                        }
+                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Updated icon container background', { muted });
+                    }
+                    
+                    // Try to update the icon itself
+                    if (iconElement) {
+                        const newIcon = muted ? 'mdi:volume-off' : 'mdi:volume-high';
+                        if (iconElement.icon !== undefined) {
+                            iconElement.icon = newIcon;
+                        }
+                        iconElement.setAttribute('icon', newIcon);
+                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Updated icon element', { newIcon });
+                    }
+                }
+            } catch (e) {
+                window.__webrtcLog?.('BUBBLE_UPDATE', 'Error processing bubble card', { error: e.message });
+            }
+        });
+    });
+    
+    window.__webrtcLog?.('INIT', 'Bubble Card audio state listener installed');
 }
 
 /**
@@ -1270,8 +1338,25 @@ class WebRTCCamera extends VideoRTC {
             oldIconAttr: volume.getAttribute('icon'),
             newIcon,
         });
+        
+        // Set both property and attribute
         volume.icon = newIcon;
         volume.setAttribute('icon', newIcon);
+        
+        // Force ha-icon to re-render by triggering requestUpdate if available (Lit element)
+        if (typeof volume.requestUpdate === 'function') {
+            volume.requestUpdate();
+            window.__webrtcLog?.('UPDATE_ICON', 'Called requestUpdate on ha-icon', {});
+        }
+        
+        // Also try setting the icon on the inner ha-svg-icon if present
+        const innerIcon = volume.shadowRoot?.querySelector('ha-svg-icon');
+        if (innerIcon) {
+            innerIcon.setAttribute('path', ''); // Clear to force refresh
+            innerIcon.path = '';
+            window.__webrtcLog?.('UPDATE_ICON', 'Found inner ha-svg-icon, cleared path', {});
+        }
+        
         window.__webrtcLog?.('UPDATE_ICON', 'Icon set complete', {
             iconAfter: volume.icon,
             iconAttrAfter: volume.getAttribute('icon'),
