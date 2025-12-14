@@ -4,7 +4,59 @@ import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
 // Version identifier for debugging cache issues
-console.log('[WebRTC Camera] Version: 3.9.5-debug');
+console.log('[WebRTC Camera] Version: 3.9.6-mute-debug');
+
+// ========== Debug Logging Infrastructure ==========
+// Stores logs in memory and localStorage for persistence
+// Access via: window.__webrtcDebugLogs or download via window.__webrtcDownloadLogs()
+if (typeof window !== 'undefined') {
+    if (!window.__webrtcDebugLogs) {
+        window.__webrtcDebugLogs = [];
+        // Try to restore from localStorage
+        try {
+            const stored = localStorage.getItem('sfenton-webrtc-debug-log');
+            if (stored) {
+                window.__webrtcDebugLogs = JSON.parse(stored);
+            }
+        } catch (e) { /* ignore */ }
+    }
+    
+    window.__webrtcLog = function(category, message, data = {}) {
+        const entry = {
+            timestamp: new Date().toISOString(),
+            category,
+            message,
+            data: JSON.parse(JSON.stringify(data)), // Deep clone to capture state
+        };
+        window.__webrtcDebugLogs.push(entry);
+        // Keep last 500 entries
+        if (window.__webrtcDebugLogs.length > 500) {
+            window.__webrtcDebugLogs.shift();
+        }
+        // Persist to localStorage
+        try {
+            localStorage.setItem('sfenton-webrtc-debug-log', JSON.stringify(window.__webrtcDebugLogs));
+        } catch (e) { /* ignore quota errors */ }
+        // Also log to console for immediate visibility
+        console.log(`[WebRTC-Debug] [${category}] ${message}`, data);
+    };
+    
+    window.__webrtcDownloadLogs = function() {
+        const blob = new Blob([JSON.stringify(window.__webrtcDebugLogs, null, 2)], {type: 'application/json'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'sfenton-webrtc-debug.log';
+        a.click();
+    };
+    
+    window.__webrtcClearLogs = function() {
+        window.__webrtcDebugLogs = [];
+        localStorage.removeItem('sfenton-webrtc-debug-log');
+        console.log('[WebRTC-Debug] Logs cleared');
+    };
+    
+    window.__webrtcLog('INIT', 'Debug logging initialized', { version: '3.9.6-mute-debug' });
+}
 
 /**
  * Global stream registry for sharing streams between cards.
@@ -1132,26 +1184,50 @@ class WebRTCCamera extends VideoRTC {
     }
 
     handleMuteRequest(detail = {}, mute) {
-        if (!this.matchesActionTarget(detail)) return;
-        if (!this.video) return;
+        window.__webrtcLog?.('MUTE_REQUEST', 'handleMuteRequest called', {
+            detail,
+            mute,
+            configId: this.config?.id,
+            configEntity: this.config?.entity,
+            configUrl: this.config?.url,
+            hasVideo: !!this.video,
+            currentMuted: this.video?.muted,
+        });
+        if (!this.matchesActionTarget(detail)) {
+            window.__webrtcLog?.('MUTE_REQUEST', 'Target mismatch, ignoring', { detail });
+            return;
+        }
+        if (!this.video) {
+            window.__webrtcLog?.('MUTE_REQUEST', 'No video element', {});
+            return;
+        }
+        const wasMuted = this.video.muted;
         this.video.muted = mute;
+        window.__webrtcLog?.('MUTE_REQUEST', 'Mute state changed', { wasMuted, newMuted: mute });
         this.emitAudioState();
         this._updateVolumeIcon();
     }
 
     handleToggleMuteRequest(detail = {}) {
-        console.log('[WebRTC] handleToggleMuteRequest called', detail);
+        window.__webrtcLog?.('TOGGLE_MUTE', 'handleToggleMuteRequest called', {
+            detail,
+            configId: this.config?.id,
+            configEntity: this.config?.entity,
+            configUrl: this.config?.url,
+            hasVideo: !!this.video,
+            currentMuted: this.video?.muted,
+        });
         if (!this.matchesActionTarget(detail)) {
-            console.log('[WebRTC] Target mismatch, ignoring');
+            window.__webrtcLog?.('TOGGLE_MUTE', 'Target mismatch, ignoring', { detail });
             return;
         }
         if (!this.video) {
-            console.log('[WebRTC] No video element');
+            window.__webrtcLog?.('TOGGLE_MUTE', 'No video element', {});
             return;
         }
         const wasMuted = this.video.muted;
         this.video.muted = !this.video.muted;
-        console.log('[WebRTC] Mute toggled:', wasMuted, '->', this.video.muted);
+        window.__webrtcLog?.('TOGGLE_MUTE', 'Mute toggled', { wasMuted, newMuted: this.video.muted });
         this.emitAudioState();
         this._updateVolumeIcon();
     }
@@ -1161,15 +1237,45 @@ class WebRTCCamera extends VideoRTC {
      * Called after mute state changes to ensure UI stays in sync.
      */
     _updateVolumeIcon() {
-        console.log('[WebRTC] _updateVolumeIcon called, ui:', this.config?.ui);
-        if (!this.video || !this.config?.ui) return;
+        window.__webrtcLog?.('UPDATE_ICON', '_updateVolumeIcon called', {
+            hasVideo: !!this.video,
+            videoMuted: this.video?.muted,
+            configUi: this.config?.ui,
+            configId: this.config?.id,
+        });
+        if (!this.video) {
+            window.__webrtcLog?.('UPDATE_ICON', 'No video element, returning', {});
+            return;
+        }
+        if (!this.config?.ui) {
+            window.__webrtcLog?.('UPDATE_ICON', 'UI not enabled, returning', { configUi: this.config?.ui });
+            return;
+        }
         const volume = this.querySelector('.volume');
-        console.log('[WebRTC] Volume element:', volume);
-        if (!volume) return;
+        window.__webrtcLog?.('UPDATE_ICON', 'Volume element query result', {
+            volumeFound: !!volume,
+            volumeTagName: volume?.tagName,
+            volumeClassName: volume?.className,
+            currentIcon: volume?.icon,
+            currentIconAttr: volume?.getAttribute?.('icon'),
+        });
+        if (!volume) {
+            window.__webrtcLog?.('UPDATE_ICON', 'Volume element not found, returning', {});
+            return;
+        }
         const newIcon = this.video.muted ? 'mdi:volume-mute' : 'mdi:volume-high';
-        console.log('[WebRTC] Setting icon to:', newIcon);
+        window.__webrtcLog?.('UPDATE_ICON', 'Setting new icon', {
+            videoMuted: this.video.muted,
+            oldIcon: volume.icon,
+            oldIconAttr: volume.getAttribute('icon'),
+            newIcon,
+        });
         volume.icon = newIcon;
         volume.setAttribute('icon', newIcon);
+        window.__webrtcLog?.('UPDATE_ICON', 'Icon set complete', {
+            iconAfter: volume.icon,
+            iconAttrAfter: volume.getAttribute('icon'),
+        });
     }
 
     handleFullscreenRequest(detail = {}) {
@@ -1200,9 +1306,20 @@ class WebRTCCamera extends VideoRTC {
     }
 
     emitAudioState() {
-        if (!this.video) return;
+        window.__webrtcLog?.('EMIT_STATE', 'emitAudioState called', {
+            hasVideo: !!this.video,
+            videoMuted: this.video?.muted,
+            configId: this.config?.id,
+        });
+        if (!this.video) {
+            window.__webrtcLog?.('EMIT_STATE', 'No video element, returning', {});
+            return;
+        }
         const muted = !!this.video.muted;
         this.dataset.muted = muted ? 'true' : 'false';
+        window.__webrtcLog?.('EMIT_STATE', 'Dataset muted set', {
+            datasetMuted: this.dataset.muted,
+        });
         
         // Update body class for CSS targeting from sibling elements
         const cardId = this.config ? this.config.id : undefined;
@@ -1211,9 +1328,11 @@ class WebRTCCamera extends VideoRTC {
             if (muted) {
                 document.body.classList.add(className);
                 document.body.classList.remove(`webrtc-unmuted-${cardId}`);
+                window.__webrtcLog?.('EMIT_STATE', 'Body class updated for muted', { className });
             } else {
                 document.body.classList.remove(className);
                 document.body.classList.add(`webrtc-unmuted-${cardId}`);
+                window.__webrtcLog?.('EMIT_STATE', 'Body class updated for unmuted', { className: `webrtc-unmuted-${cardId}` });
             }
         }
         
@@ -1223,6 +1342,7 @@ class WebRTCCamera extends VideoRTC {
             target_id: this.config ? this.config.id : undefined,
             muted,
         };
+        window.__webrtcLog?.('EMIT_STATE', 'Dispatching webrtc-audio-state event', { detail });
         this.dispatchEvent(new CustomEvent('webrtc-audio-state', {
             bubbles: true,
             composed: true,
@@ -1292,7 +1412,15 @@ class WebRTCCamera extends VideoRTC {
     }
 
     renderCustomUI() {
-        if (!this.config.ui) return;
+        window.__webrtcLog?.('RENDER_UI', 'renderCustomUI called', {
+            configUi: this.config.ui,
+            configId: this.config?.id,
+            hasVideo: !!this.video,
+        });
+        if (!this.config.ui) {
+            window.__webrtcLog?.('RENDER_UI', 'UI not enabled, returning', {});
+            return;
+        }
 
         this.video.controls = false;
         this.video.style.pointerEvents = 'none';
@@ -1390,14 +1518,34 @@ class WebRTCCamera extends VideoRTC {
         const ui = this.querySelector('.ui');
         ui.addEventListener('click', ev => {
             const icon = ev.target.icon;
+            window.__webrtcLog?.('UI_CLICK', 'UI click event', {
+                targetTagName: ev.target.tagName,
+                targetClassName: ev.target.className,
+                icon,
+                iconAttr: ev.target.getAttribute?.('icon'),
+                videoMuted: video.muted,
+                configId: this.config?.id,
+            });
             if (icon === 'mdi:play') {
                 this.play();
             } else if (icon === 'mdi:volume-mute') {
+                window.__webrtcLog?.('UI_CLICK', 'Volume mute icon clicked - unmuting', {
+                    currentMuted: video.muted,
+                });
                 video.muted = false;
+                window.__webrtcLog?.('UI_CLICK', 'Video muted set to false', {
+                    newMuted: video.muted,
+                });
                 this.emitAudioState();
                 this._updateVolumeIcon();
             } else if (icon === 'mdi:volume-high') {
+                window.__webrtcLog?.('UI_CLICK', 'Volume high icon clicked - muting', {
+                    currentMuted: video.muted,
+                });
                 video.muted = true;
+                window.__webrtcLog?.('UI_CLICK', 'Video muted set to true', {
+                    newMuted: video.muted,
+                });
                 this.emitAudioState();
                 this._updateVolumeIcon();
             } else if (icon === 'mdi:fullscreen') {
@@ -1433,10 +1581,27 @@ class WebRTCCamera extends VideoRTC {
         });
 
         const volume = this.querySelector('.volume');
+        window.__webrtcLog?.('RENDER_UI', 'Volume element found during render', {
+            volumeFound: !!volume,
+            volumeTagName: volume?.tagName,
+            initialIcon: volume?.icon,
+            initialIconAttr: volume?.getAttribute?.('icon'),
+            configId: this.config?.id,
+        });
         video.addEventListener('loadeddata', () => {
-            volume.style.display = this.hasAudio ? 'block' : 'none';
+            const hasAudio = this.hasAudio;
+            window.__webrtcLog?.('VIDEO_EVENT', 'loadeddata event - setting volume visibility', {
+                hasAudio,
+                volumeDisplay: hasAudio ? 'block' : 'none',
+            });
+            volume.style.display = hasAudio ? 'block' : 'none';
         });
         video.addEventListener('volumechange', () => {
+            window.__webrtcLog?.('VIDEO_EVENT', 'volumechange event fired', {
+                videoMuted: video.muted,
+                videoVolume: video.volume,
+                configId: this.config?.id,
+            });
             this._updateVolumeIcon();
         });
 
