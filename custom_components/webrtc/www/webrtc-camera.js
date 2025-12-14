@@ -4,7 +4,7 @@ import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
 // Version identifier for debugging cache issues
-console.log('[WebRTC Camera] Version: 3.9.9-bubble-deep-search');
+console.log('[WebRTC Camera] Version: 3.9.10-state-api');
 
 // ========== Debug Logging Infrastructure ==========
 // Stores logs in memory and localStorage for persistence
@@ -56,6 +56,61 @@ if (typeof window !== 'undefined') {
     };
     
     window.__webrtcLog('INIT', 'Debug logging initialized', { version: '3.9.7-icon-fix' });
+}
+
+/**
+ * Global WebRTC Audio State API
+ * 
+ * This provides a simple API for external components (like Bubble Card) to query
+ * the mute state of WebRTC cameras. Each browser/device has its own state.
+ * 
+ * Usage in Bubble Card styles template:
+ *   ${icon.setAttribute("icon", window.__webrtcGetMuteState?.('card-id') ? 'mdi:volume-off' : 'mdi:volume-high')}
+ *   
+ * Or for background color:
+ *   .bubble-icon-container {
+ *     background-color: ${window.__webrtcGetMuteState?.('card-id') ? '' : 'green'} !important;
+ *   }
+ */
+if (typeof window !== 'undefined') {
+    // State storage - maps card_id to muted boolean
+    if (!window.__webrtcAudioState) {
+        window.__webrtcAudioState = {};
+    }
+    
+    /**
+     * Get the mute state for a specific card
+     * @param {string} cardId - The card_id of the WebRTC camera
+     * @returns {boolean} - true if muted, false if unmuted, true (default) if unknown
+     */
+    window.__webrtcGetMuteState = function(cardId) {
+        if (!cardId) return true;
+        // Default to muted if not yet known
+        return window.__webrtcAudioState[cardId] ?? true;
+    };
+    
+    /**
+     * Set the mute state for a specific card (called internally by WebRTC camera)
+     * @param {string} cardId - The card_id of the WebRTC camera  
+     * @param {boolean} muted - true if muted, false if unmuted
+     */
+    window.__webrtcSetMuteState = function(cardId, muted) {
+        if (!cardId) return;
+        window.__webrtcAudioState[cardId] = muted;
+        window.__webrtcLog?.('STATE_API', 'Mute state updated', { cardId, muted });
+    };
+    
+    /**
+     * Get all mute states (for debugging)
+     * @returns {Object} - Map of card_id to muted boolean
+     */
+    window.__webrtcGetAllMuteStates = function() {
+        return { ...window.__webrtcAudioState };
+    };
+    
+    window.__webrtcLog?.('INIT', 'Global audio state API installed', {
+        functions: ['__webrtcGetMuteState(cardId)', '__webrtcSetMuteState(cardId, muted)', '__webrtcGetAllMuteStates()']
+    });
 }
 
 /**
@@ -1517,6 +1572,11 @@ class WebRTCCamera extends VideoRTC {
                 document.body.classList.add(`webrtc-unmuted-${cardId}`);
                 window.__webrtcLog?.('EMIT_STATE', 'Body class updated for unmuted', { className: `webrtc-unmuted-${cardId}` });
             }
+        }
+        
+        // Update global state API for external components to query
+        if (cardId && typeof window !== 'undefined' && window.__webrtcSetMuteState) {
+            window.__webrtcSetMuteState(cardId, muted);
         }
         
         const detail = {
