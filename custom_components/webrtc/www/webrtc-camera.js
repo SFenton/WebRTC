@@ -4,7 +4,7 @@ import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
 // Version identifier for debugging cache issues
-console.log('[WebRTC Camera] Version: 3.9.8-bubble-sync');
+console.log('[WebRTC Camera] Version: 3.9.9-bubble-deep-search');
 
 // ========== Debug Logging Infrastructure ==========
 // Stores logs in memory and localStorage for persistence
@@ -62,9 +62,45 @@ if (typeof window !== 'undefined') {
  * Global listener to update Bubble Card button icons when audio state changes.
  * This works around the limitation that :host-context() CSS doesn't react to
  * dynamic body class changes.
+ * 
+ * Bubble Card DOM structure (from createBaseStructure):
+ * - .bubble-icon-container / .bubble-main-icon-container (div) - the background container
+ * - .bubble-icon / .bubble-main-icon (ha-icon) - the icon element itself
  */
 if (typeof window !== 'undefined' && !window.__webrtcAudioStateListener) {
     window.__webrtcAudioStateListener = true;
+    
+    /**
+     * Helper to find elements inside bubble-card, handling nested shadow DOMs
+     */
+    function findInBubbleCard(card, selector) {
+        // Try direct shadowRoot first
+        if (card.shadowRoot) {
+            const found = card.shadowRoot.querySelector(selector);
+            if (found) return found;
+        }
+        
+        // Try the card's content property (Bubble Card stores DOM here)
+        if (card.content) {
+            const found = card.content.querySelector?.(selector);
+            if (found) return found;
+        }
+        
+        // Try nested ha-card elements
+        const haCard = card.shadowRoot?.querySelector('ha-card') || card.querySelector?.('ha-card');
+        if (haCard?.shadowRoot) {
+            const found = haCard.shadowRoot.querySelector(selector);
+            if (found) return found;
+        }
+        
+        // Try the card element itself
+        if (card.querySelector) {
+            const found = card.querySelector(selector);
+            if (found) return found;
+        }
+        
+        return null;
+    }
     
     document.addEventListener('webrtc-audio-state', (event) => {
         const { target_id, muted } = event.detail || {};
@@ -73,7 +109,6 @@ if (typeof window !== 'undefined' && !window.__webrtcAudioStateListener) {
         window.__webrtcLog?.('BUBBLE_UPDATE', 'Audio state event received', { target_id, muted });
         
         // Find all Bubble Card buttons that have a tap_action targeting this camera
-        // We look for bubble-card elements and check their button configuration
         const bubbleCards = document.querySelectorAll('bubble-card');
         
         bubbleCards.forEach(card => {
@@ -87,38 +122,101 @@ if (typeof window !== 'undefined' && !window.__webrtcAudioStateListener) {
                     tapAction?.event === 'webrtc-toggle-mute' &&
                     tapAction?.target_id === target_id) {
                     
-                    window.__webrtcLog?.('BUBBLE_UPDATE', 'Found matching Bubble Card', { 
+                    // Log full structure for debugging
+                    window.__webrtcLog?.('BUBBLE_UPDATE', 'Found matching Bubble Card - examining structure', { 
                         target_id, 
                         muted,
-                        cardConfig: config?.name 
+                        hasShadowRoot: !!card.shadowRoot,
+                        hasContent: !!card.content,
+                        shadowRootChildren: card.shadowRoot?.children?.length,
+                        contentChildren: card.content?.children?.length
                     });
                     
-                    // Find the icon element inside the bubble card
-                    const iconContainer = card.shadowRoot?.querySelector('.bubble-icon-container');
-                    const iconElement = card.shadowRoot?.querySelector('.bubble-icon ha-icon, .bubble-icon');
+                    // Try multiple selector strategies to find the icon container
+                    const containerSelectors = [
+                        '.bubble-icon-container',
+                        '.bubble-main-icon-container',
+                        '.icon-container',
+                        '[class*="icon-container"]'
+                    ];
+                    
+                    let iconContainer = null;
+                    for (const sel of containerSelectors) {
+                        iconContainer = findInBubbleCard(card, sel);
+                        if (iconContainer) {
+                            window.__webrtcLog?.('BUBBLE_UPDATE', `Found container with selector: ${sel}`);
+                            break;
+                        }
+                    }
+                    
+                    // Try multiple selector strategies to find the icon element
+                    const iconSelectors = [
+                        'ha-icon.bubble-icon',
+                        'ha-icon.bubble-main-icon',
+                        '.bubble-icon-container ha-icon',
+                        '.bubble-main-icon-container ha-icon',
+                        'ha-icon.icon',
+                        'ha-icon[icon]'
+                    ];
+                    
+                    let iconElement = null;
+                    for (const sel of iconSelectors) {
+                        iconElement = findInBubbleCard(card, sel);
+                        if (iconElement) {
+                            window.__webrtcLog?.('BUBBLE_UPDATE', `Found icon with selector: ${sel}`);
+                            break;
+                        }
+                    }
+                    
+                    window.__webrtcLog?.('BUBBLE_UPDATE', 'Element search results', { 
+                        hasIconContainer: !!iconContainer,
+                        hasIconElement: !!iconElement,
+                        iconContainerClass: iconContainer?.className,
+                        iconElementTag: iconElement?.tagName,
+                        iconElementClass: iconElement?.className,
+                        currentIcon: iconElement?.icon || iconElement?.getAttribute?.('icon')
+                    });
                     
                     if (iconContainer) {
                         // Update background color based on mute state
+                        // Unmuted = green (audio on), Muted = default (inherit theme)
                         if (muted) {
-                            iconContainer.style.backgroundColor = '';  // Reset to default (red/original)
+                            iconContainer.style.removeProperty('background-color');
+                            iconContainer.style.removeProperty('background');
                         } else {
-                            iconContainer.style.backgroundColor = 'green';
+                            iconContainer.style.setProperty('background-color', 'green', 'important');
                         }
                         window.__webrtcLog?.('BUBBLE_UPDATE', 'Updated icon container background', { muted });
                     }
                     
-                    // Try to update the icon itself
+                    // Update the icon
                     if (iconElement) {
                         const newIcon = muted ? 'mdi:volume-off' : 'mdi:volume-high';
-                        if (iconElement.icon !== undefined) {
-                            iconElement.icon = newIcon;
-                        }
+                        // Bubble Card pattern: set both .icon property and attribute
+                        iconElement.icon = newIcon;
                         iconElement.setAttribute('icon', newIcon);
-                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Updated icon element', { newIcon });
+                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Updated icon element', { 
+                            newIcon,
+                            iconProperty: iconElement.icon,
+                            iconAttribute: iconElement.getAttribute('icon')
+                        });
+                    } else {
+                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Could not find icon element - dumping structure');
+                        // Dump structure for debugging
+                        if (card.shadowRoot) {
+                            window.__webrtcLog?.('BUBBLE_UPDATE', 'shadowRoot innerHTML (truncated)', {
+                                html: card.shadowRoot.innerHTML?.substring(0, 500)
+                            });
+                        }
+                        if (card.content) {
+                            window.__webrtcLog?.('BUBBLE_UPDATE', 'content innerHTML (truncated)', {
+                                html: card.content.innerHTML?.substring(0, 500)
+                            });
+                        }
                     }
                 }
             } catch (e) {
-                window.__webrtcLog?.('BUBBLE_UPDATE', 'Error processing bubble card', { error: e.message });
+                window.__webrtcLog?.('BUBBLE_UPDATE', 'Error processing bubble card', { error: e.message, stack: e.stack });
             }
         });
     });
