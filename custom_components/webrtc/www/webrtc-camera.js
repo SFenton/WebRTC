@@ -1124,6 +1124,9 @@ class WebRTCCamera extends VideoRTC {
                 overflow: hidden;
                 position: relative;
                 isolation: isolate; /* Create stacking context to contain z-index */
+                border-radius: 28px;
+                border-width: 0;
+                border-color: transparent;
             }
             ha-icon {
                 color: white;
