@@ -255,7 +255,16 @@ if (typeof window !== 'undefined' && !window.__webrtcAudioStateListener) {
                             iconProperty: iconElement.icon,
                             iconAttribute: iconElement.getAttribute('icon')
                         });
-                    } else {
+                    }
+                    
+                    // Force Bubble Card to re-render to pick up the changes
+                    // This triggers LitElement's update cycle and re-evaluates styles templates
+                    if (typeof card.requestUpdate === 'function') {
+                        card.requestUpdate();
+                        window.__webrtcLog?.('BUBBLE_UPDATE', 'Called card.requestUpdate()');
+                    }
+                    
+                    if (!iconElement) {
                         window.__webrtcLog?.('BUBBLE_UPDATE', 'Could not find icon element - dumping structure');
                         // Dump structure for debugging
                         if (card.shadowRoot) {
@@ -1136,6 +1145,8 @@ class WebRTCCamera extends VideoRTC {
                 background-color: black;
                 height: 100%;
                 position: relative; /* important for Safari */
+                border-radius: inherit; /* Inherit rounded corners from ha-card */
+                overflow: hidden; /* Clip video to rounded corners */
             }
             .player:active {
                 cursor: move; /* important for zoom-controller */
@@ -1589,9 +1600,9 @@ class WebRTCCamera extends VideoRTC {
             muted,
         };
         window.__webrtcLog?.('EMIT_STATE', 'Dispatching webrtc-audio-state event', { detail });
-        this.dispatchEvent(new CustomEvent('webrtc-audio-state', {
-            bubbles: true,
-            composed: true,
+        // Dispatch on window to ensure event reaches document listeners across shadow DOM boundaries
+        window.dispatchEvent(new CustomEvent('webrtc-audio-state', {
+            bubbles: false,
             detail,
         }));
     }
