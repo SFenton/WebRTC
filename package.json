@@ -4,6 +4,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^1.6.1",
     "eslint": "^8.44.0",
     "eslint-plugin-html": "^7.1.0",
     "happy-dom": "^13.10.1",

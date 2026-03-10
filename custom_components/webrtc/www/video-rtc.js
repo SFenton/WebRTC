@@ -164,14 +164,34 @@ export class VideoRTC extends HTMLElement {
      * https://developer.chrome.com/blog/autoplay/
      */
     play() {
+        const userMuted = this._userMuted;
         this.video.play().catch(() => {
             if (!this.video.muted) {
                 this.video.muted = true;
+                this._autoMuted = true;
                 this.video.play().catch(er => {
                     console.warn(er);
                 });
             }
         });
+    }
+
+    /**
+     * Track whether the user explicitly set muted state.
+     * Distinguishes user intent from autoplay-fallback muting.
+     * @param {boolean} muted
+     */
+    setUserMuted(muted) {
+        this._userMuted = muted;
+        this._autoMuted = false;
+        if (this.video) this.video.muted = muted;
+    }
+
+    /**
+     * @returns {boolean} true if the video was muted by autoplay fallback, not by user.
+     */
+    get wasAutoMuted() {
+        return !!this._autoMuted;
     }
 
     /**

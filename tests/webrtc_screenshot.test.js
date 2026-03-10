@@ -126,7 +126,7 @@ describe('webrtc-camera screenshot events', () => {
     it('emits audio state events with detail and dataset', () => {
         const camera = createCamera({card_id: 'popup'});
         const handler = vi.fn();
-        camera.addEventListener('webrtc-audio-state', handler);
+        window.addEventListener('webrtc-audio-state', handler);
 
         camera.video.muted = true;
         camera.video.dispatchEvent(new Event('volumechange'));
@@ -144,23 +144,27 @@ describe('webrtc-camera screenshot events', () => {
 
         expect(camera.dataset.muted).toBe('false');
         expect(handler.mock.calls[handler.mock.calls.length - 1][0].detail.muted).toBe(false);
+
+        window.removeEventListener('webrtc-audio-state', handler);
     });
 
     it('handleMuteRequest emits audio state even without volumechange', () => {
         const camera = createCamera({card_id: 'popup'});
         const handler = vi.fn();
-        camera.addEventListener('webrtc-audio-state', handler);
+        window.addEventListener('webrtc-audio-state', handler);
 
         camera.handleMuteRequest({target_id: 'popup'}, true);
         expect(camera.video.muted).toBe(true);
         expect(handler).toHaveBeenCalled();
         expect(handler.mock.calls[handler.mock.calls.length - 1][0].detail.muted).toBe(true);
+
+        window.removeEventListener('webrtc-audio-state', handler);
     });
 
     it('toggle mute helper switches audio state and emits event', () => {
         const camera = createCamera({card_id: 'popup'});
         const handler = vi.fn();
-        camera.addEventListener('webrtc-audio-state', handler);
+        window.addEventListener('webrtc-audio-state', handler);
 
         camera.video.muted = false;
         camera.handleToggleMuteRequest({target_id: 'popup'});
@@ -171,6 +175,8 @@ describe('webrtc-camera screenshot events', () => {
         camera.handleToggleMuteRequest({target_id: 'popup'});
         expect(camera.video.muted).toBe(false);
         expect(handler).toHaveBeenCalled();
+
+        window.removeEventListener('webrtc-audio-state', handler);
     });
 
     it('volume icon updates when mute state changes via UI config', () => {

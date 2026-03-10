@@ -4,12 +4,17 @@ import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
 import {streamManager} from './stream-manager.js?v=1.0.0';
 
 // Version identifier for debugging cache issues
-console.log('[WebRTC Camera] Version: 3.9.10-state-api');
+const WEBRTC_VERSION = '3.10.0';
+console.log(`[WebRTC Camera] Version: ${WEBRTC_VERSION}`);
 
 // ========== Debug Logging Infrastructure ==========
 // Stores logs in memory and localStorage for persistence
 // Access via: window.__webrtcDebugLogs or download via window.__webrtcDownloadLogs()
 if (typeof window !== 'undefined') {
+    // Debug logging is off by default. Enable with: window.__webrtcEnableDebug()
+    if (window.__webrtcDebugEnabled === undefined) {
+        window.__webrtcDebugEnabled = false;
+    }
     if (!window.__webrtcDebugLogs) {
         window.__webrtcDebugLogs = [];
         // Try to restore from localStorage
@@ -22,6 +27,7 @@ if (typeof window !== 'undefined') {
     }
     
     window.__webrtcLog = function(category, message, data = {}) {
+        if (!window.__webrtcDebugEnabled) return;
         const entry = {
             timestamp: new Date().toISOString(),
             category,
@@ -33,7 +39,7 @@ if (typeof window !== 'undefined') {
         if (window.__webrtcDebugLogs.length > 500) {
             window.__webrtcDebugLogs.shift();
         }
-        // Persist to localStorage
+        // Persist to localStorage only when enabled
         try {
             localStorage.setItem('sfenton-webrtc-debug-log', JSON.stringify(window.__webrtcDebugLogs));
         } catch (e) { /* ignore quota errors */ }
@@ -55,7 +61,17 @@ if (typeof window !== 'undefined') {
         console.log('[WebRTC-Debug] Logs cleared');
     };
     
-    window.__webrtcLog('INIT', 'Debug logging initialized', { version: '3.9.7-icon-fix' });
+    window.__webrtcEnableDebug = function() {
+        window.__webrtcDebugEnabled = true;
+        console.log('[WebRTC-Debug] Debug logging enabled');
+    };
+    
+    window.__webrtcDisableDebug = function() {
+        window.__webrtcDebugEnabled = false;
+        console.log('[WebRTC-Debug] Debug logging disabled');
+    };
+    
+    window.__webrtcLog('INIT', 'Debug logging initialized', { version: WEBRTC_VERSION });
 }
 
 /**
@@ -500,6 +516,12 @@ class WebRTCCamera extends VideoRTC {
         // Emit initial mute state (will set body class if muted)
         this._initializeAudioState();
         
+        // Cancel deferred unregistration if we reconnected in time
+        if (this._deferredUnregisterTID) {
+            clearTimeout(this._deferredUnregisterTID);
+            this._deferredUnregisterTID = 0;
+        }
+        
         // Register as stream owner for sharing
         if (this.config?.id) {
             this._registerAsStreamOwner();
@@ -510,6 +532,7 @@ class WebRTCCamera extends VideoRTC {
         this._unbindGlobalActionEvents();
         this._cleanupActionHandlers();
         this._cleanupBodyMuteClass();
+        this._stopMediaWatchdog();
         
         // For clone cards, unsubscribe from source
         if (this._isClone) {
@@ -523,9 +546,15 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
         
-        // For primary cards, unregister from registry
+        // Defer stream owner unregistration to match parent's disconnect
+        // grace period. The parent class waits DISCONNECT_TIMEOUT (5s) before
+        // actually disconnecting — if we unregister immediately, clone cards
+        // lose their stream even on brief DOM detach/reattach cycles.
         if (this.config?.id) {
-            this._unregisterAsStreamOwner();
+            this._deferredUnregisterTID = setTimeout(() => {
+                this._deferredUnregisterTID = 0;
+                this._unregisterAsStreamOwner();
+            }, this.DISCONNECT_TIMEOUT);
         }
         
         super.disconnectedCallback();
@@ -1119,6 +1148,45 @@ class WebRTCCamera extends VideoRTC {
             this._updateStreamStatus('connected');
             // Update registry for WebRTC streams
             this._updateRegisteredStream();
+            // Start watchdog to detect stalled media
+            this._startMediaWatchdog();
+        }
+    }
+
+    /**
+     * Monitor video playback and force reconnect if media stalls
+     * while the WebRTC peer connection still appears alive.
+     */
+    _startMediaWatchdog() {
+        this._stopMediaWatchdog();
+        let lastTime = 0;
+        let stallCount = 0;
+        this._watchdogTID = setInterval(() => {
+            if (!this.video || this.video.paused) return;
+            const currentTime = this.video.currentTime;
+            if (currentTime === lastTime && this.pcState === WebSocket.OPEN) {
+                stallCount++;
+                if (stallCount >= 3) { // ~15 seconds stalled
+                    window.__webrtcLog?.('WATCHDOG', 'Media stalled, forcing reconnect', {
+                        currentTime, stallCount, configId: this.config?.id,
+                    });
+                    this._stopMediaWatchdog();
+                    if (this.pc) { this.pc.close(); this.pc = null; }
+                    this.pcState = WebSocket.CLOSED;
+                    this._updateStreamStatus('connecting');
+                    this.onconnect();
+                }
+            } else {
+                stallCount = 0;
+            }
+            lastTime = currentTime;
+        }, 5000);
+    }
+
+    _stopMediaWatchdog() {
+        if (this._watchdogTID) {
+            clearInterval(this._watchdogTID);
+            this._watchdogTID = 0;
         }
     }
 
@@ -1225,7 +1293,7 @@ class WebRTCCamera extends VideoRTC {
         const mode = this.querySelector('.mode');
         mode.addEventListener('click', () => this.nextStream(true));
 
-        if (this.config.muted) this.video.muted = true;
+        if (this.config.muted) this.setUserMuted(true);
         if (this.config.poster_remote) this.video.poster = this.config.poster;
         
         // Set label if configured
@@ -1437,7 +1505,7 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
         const wasMuted = this.video.muted;
-        this.video.muted = mute;
+        this.setUserMuted(mute);
         window.__webrtcLog?.('MUTE_REQUEST', 'Mute state changed', { wasMuted, newMuted: mute });
         this.emitAudioState();
         this._updateVolumeIcon();
@@ -1461,7 +1529,7 @@ class WebRTCCamera extends VideoRTC {
             return;
         }
         const wasMuted = this.video.muted;
-        this.video.muted = !this.video.muted;
+        this.setUserMuted(!this.video.muted);
         window.__webrtcLog?.('TOGGLE_MUTE', 'Mute toggled', { wasMuted, newMuted: this.video.muted });
         this.emitAudioState();
         this._updateVolumeIcon();
@@ -1789,7 +1857,7 @@ class WebRTCCamera extends VideoRTC {
                 window.__webrtcLog?.('UI_CLICK', 'Volume mute icon clicked - unmuting', {
                     currentMuted: video.muted,
                 });
-                video.muted = false;
+                this.setUserMuted(false);
                 window.__webrtcLog?.('UI_CLICK', 'Video muted set to false', {
                     newMuted: video.muted,
                 });
@@ -1799,7 +1867,7 @@ class WebRTCCamera extends VideoRTC {
                 window.__webrtcLog?.('UI_CLICK', 'Volume high icon clicked - muting', {
                     currentMuted: video.muted,
                 });
-                video.muted = true;
+                this.setUserMuted(true);
                 window.__webrtcLog?.('UI_CLICK', 'Video muted set to true', {
                     newMuted: video.muted,
                 });
