@@ -255,13 +255,29 @@ class WebRTCStreamManager {
             sdpSemantics: 'unified-plan',
         });
 
+        // Save stream reference when tracks arrive (during SDP), but do NOT
+        // notify subscribers yet — media won't flow until ICE completes.
         entry.pc.ontrack = (ev) => {
             if (ev.streams && ev.streams[0]) {
-                entry.stream = ev.streams[0];
-                entry.video.srcObject = entry.stream;
+                entry._pendingStream = ev.streams[0];
+                entry.video.srcObject = ev.streams[0];
+                entry.mode = 'webrtc';
+            }
+        };
+
+        // Only mark as connected once ICE negotiation succeeds and media
+        // can actually flow. This mirrors the upstream video-rtc.js approach.
+        entry.pc.onconnectionstatechange = () => {
+            if (entry.pc.connectionState === 'connected') {
+                entry.stream = entry._pendingStream || entry.video.srcObject;
                 entry.status = 'connected';
                 entry.mode = 'webrtc';
                 this._notifySubscribers(entry, entry.stream, 'connected', 'webrtc');
+                // Play the hidden video to ensure frames are decoded
+                entry.video.play().catch(() => {});
+            } else if (entry.pc.connectionState === 'failed' ||
+                       entry.pc.connectionState === 'disconnected') {
+                this._handleDisconnect(entry);
             }
         };
 
@@ -274,6 +290,8 @@ class WebRTCStreamManager {
             }
         };
 
+        // Keep iceconnectionstatechange as a fallback for browsers that
+        // don't fire connectionstatechange reliably (older Safari).
         entry.pc.oniceconnectionstatechange = () => {
             if (entry.pc.iceConnectionState === 'failed' || 
                 entry.pc.iceConnectionState === 'disconnected') {
