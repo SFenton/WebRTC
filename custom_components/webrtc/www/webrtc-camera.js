@@ -1,7 +1,7 @@
 /** Chrome 63+, Safari 11.1+ */
 import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
-import {streamManager} from './stream-manager.js?v=1.0.0';
+import {streamManager} from './stream-manager.js?v=1.1.0';
 
 // Version identifier for debugging cache issues
 const WEBRTC_VERSION = '3.10.0';
