@@ -161,10 +161,10 @@ export class VideoRTC extends HTMLElement {
 
     /**
      * Play video. Support automute when autoplay blocked.
+     * On mobile browsers, autoplay almost always requires muted video.
      * https://developer.chrome.com/blog/autoplay/
      */
     play() {
-        const userMuted = this._userMuted;
         this.video.play().catch(() => {
             if (!this.video.muted) {
                 this.video.muted = true;

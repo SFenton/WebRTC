@@ -1030,9 +1030,13 @@ class WebRTCCamera extends VideoRTC {
     oninit() {
         super.oninit();
         
-        // Allow disabling native video controls via config
-        if (this.config.controls === false && this.video) {
-            this.video.controls = false;
+        // Always disable native browser video controls inside the card.
+        // The card provides its own UI (when ui:true) or is meant to be
+        // a clean video-only view. Native controls look broken on mobile
+        // and interfere with gesture handlers (PTZ, tap actions).
+        // Set controls: true in config to explicitly re-enable native controls.
+        if (this.video) {
+            this.video.controls = !!this.config.controls;
         }
         
         this.renderMain();
