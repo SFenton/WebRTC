@@ -1,4 +1,5 @@
 import {beforeEach, afterEach, describe, expect, it, vi} from 'vitest';
+import {readFileSync} from 'node:fs';
 
 await import('../custom_components/webrtc/www/webrtc-camera.js');
 
@@ -203,6 +204,53 @@ describe('play() mute preservation', () => {
         camera.handleToggleMuteRequest({target_id: 'mute-5'});
         expect(camera._userMuted).toBe(false);
         expect(camera.video.muted).toBe(false);
+    });
+
+    it('retains the chosen audio state when a shared stream is replaced', () => {
+        const camera = createCamera({card_id: 'mute-shared', shared: true});
+        vi.spyOn(camera.video, 'play').mockResolvedValue();
+        camera.setUserMuted(false);
+        const firstStream = {getAudioTracks: () => [{kind: 'audio'}]};
+        const nextStream = {getAudioTracks: () => [{kind: 'audio'}]};
+
+        camera._onStreamManagerUpdate(firstStream, 'connected', 'webrtc');
+        camera._onStreamManagerUpdate(null, 'disconnected', null);
+        camera._onStreamManagerUpdate(nextStream, 'connected', 'webrtc');
+
+        expect(camera.video.srcObject).toBe(nextStream);
+        expect(camera.video.muted).toBe(false);
+        expect(camera._userMuted).toBe(false);
+    });
+
+    it('does not reset the same media element when live resumes after a background gap', () => {
+        const camera = createCamera({card_id: 'resume-shared', shared: true});
+        vi.spyOn(camera.video, 'play').mockResolvedValue();
+        const stream = {getAudioTracks: () => [{kind: 'audio'}]};
+        let current = null;
+        let assignments = 0;
+        Object.defineProperty(camera.video, 'srcObject', {
+            configurable: true,
+            get: () => current,
+            set: value => { current = value; assignments++; },
+        });
+
+        camera._onStreamManagerUpdate(stream, 'connected', 'webrtc');
+        camera._onStreamManagerUpdate(null, 'connecting', null);
+        camera._onStreamManagerUpdate(stream, 'connected', 'webrtc');
+
+        expect(camera.video.srcObject).toBe(stream);
+        expect(assignments).toBe(1);
+    });
+});
+
+describe('shared stream asset revision', () => {
+    it('cache-busts the updated manager when this integration version loads', () => {
+        const manifest = JSON.parse(readFileSync('custom_components/webrtc/manifest.json', 'utf8'));
+        const cardSource = readFileSync('custom_components/webrtc/www/webrtc-camera.js', 'utf8');
+
+        expect(manifest.version).toBe('v3.10.3');
+        expect(cardSource).toContain("const WEBRTC_VERSION = '3.10.3'");
+        expect(cardSource).toContain("from './stream-manager.js?v=1.3.0'");
     });
 });
 

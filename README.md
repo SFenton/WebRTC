@@ -81,6 +81,27 @@ If the integration is not in the list, you need to clear the browser cache.
 
 Component **doesn't create devices and entities**. It creates only two services and lovelace custom card.
 
+### Shared RTC reconnect pilot
+
+Cards configured with `shared: true`, `mode: webrtc`, and `media: video,audio` use
+one RTC peer per stream in the browser document. The shared manager keeps an
+advancing video peer when its signed signaling WebSocket closes, tolerates a
+brief ICE `disconnected` state, and only reports a live stream after decoded
+frames arrive. It restarts a peer that fails, never produces a first frame, or
+stops decoding while visible. A last-subscriber grace period is 30 seconds;
+a hidden document releases its RTC peer after 60 seconds. A Home Assistant
+`ready` event re-arms exhausted signing retries. A returning document keeps
+the last image but reports loading until a new frame decodes; a frozen
+connection is retried rather than mislabeled live. An audio track and audible
+output still depend on the camera codec, browser autoplay policy, and a user
+unmute gesture; `connected` alone does not prove sound.
+
+This client-only change does not prevent Home Assistant or Android from
+recreating the dashboard document. Enabling this integration registers its
+Lovelace resource instance-wide, so an isolated test dashboard is not an
+isolated HA integration deployment. Preserve production HLS until a separately
+approved HA enablement and an actual video-and-audio comparison succeed.
+
 ## Custom card
 
 As a `url` you can use:

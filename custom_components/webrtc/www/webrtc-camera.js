@@ -1,10 +1,10 @@
 /** Chrome 63+, Safari 11.1+ */
 import {VideoRTC} from './video-rtc.js?v=1.9.12';
 import {DigitalPTZ} from './digital-ptz.js?v=3.3.0';
-import {streamManager} from './stream-manager.js?v=1.1.0';
+import {streamManager} from './stream-manager.js?v=1.3.0';
 
 // Version identifier for debugging cache issues
-const WEBRTC_VERSION = '3.10.0';
+const WEBRTC_VERSION = '3.10.3';
 console.log(`[WebRTC Camera] Version: ${WEBRTC_VERSION}`);
 
 // ========== Debug Logging Infrastructure ==========
@@ -797,7 +797,7 @@ class WebRTCCamera extends VideoRTC {
                 
             case 'connected':
                 if (stream) {
-                    this.video.srcObject = stream;
+                    if (this.video.srcObject !== stream) this.video.srcObject = stream;
                     this.setStatus(mode?.toUpperCase() || 'SHARED', this.config.title || '');
                     this.play();
                     // Update registry for other cards that might clone this one
@@ -2036,4 +2036,3 @@ const card = {
 // Apple iOS 12 doesn't support `||=`
 if (window.customCards) window.customCards.push(card);
 else window.customCards = [card];
-

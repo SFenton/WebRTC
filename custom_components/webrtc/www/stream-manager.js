@@ -11,7 +11,7 @@
  * - Automatic reconnection on failure
  * - Stream sharing via MediaStream cloning
  * 
- * @version 1.0.0
+ * @version 1.3.0
  */
 
 /**
@@ -32,6 +32,14 @@
  * @property {Object} config - Stream configuration
  */
 
+const FRAME_CHECK_MS = 1000;
+const SIGN_TIMEOUT_MS = 10000;
+const FIRST_FRAME_TIMEOUT_MS = 15000;
+const FRAME_STALL_MS = 8000;
+const ICE_RECOVERY_MS = 5000;
+const HIDDEN_RELEASE_MS = 60000;
+const UNSUBSCRIBED_GRACE_MS = 30000;
+
 class WebRTCStreamManager {
     constructor() {
         /** @type {Map<string, StreamEntry>} */
@@ -45,6 +53,11 @@ class WebRTCStreamManager {
         
         /** @type {number} */
         this.reconnectDelay = 2000;
+        this.maxReconnectDelay = 60000;
+        this._haConnection = null;
+        this._observingVisibility = false;
+        this._handleHaReady = this._retryIdleStreams.bind(this);
+        this._handleVisibilityChange = this._onVisibilityChange.bind(this);
 
         // Supported modes in order of preference
         this.defaultMode = 'webrtc,mse,hls,mjpeg';
@@ -55,11 +68,21 @@ class WebRTCStreamManager {
      * @param {Object} hass 
      */
     setHass(hass) {
+        const connection = hass?.connection || null;
+        if (connection !== this._haConnection) {
+            this._haConnection?.removeEventListener?.('ready', this._handleHaReady);
+            connection?.addEventListener?.('ready', this._handleHaReady);
+            this._haConnection = connection;
+        }
+        const hadHass = !!this._hass;
         this._hass = hass;
-        // Update hass reference for all existing streams
         this.streams.forEach(entry => {
             entry.hass = hass;
         });
+        if ((!hadHass && hass) || (connection && connection !== this._lastReadyConnection)) {
+            this._lastReadyConnection = connection;
+            this._retryIdleStreams();
+        }
     }
 
     /**
@@ -92,8 +115,24 @@ class WebRTCStreamManager {
             // Create new stream entry
             entry = this._createStreamEntry(key, config);
             this.streams.set(key, entry);
+        } else if (
+            entry.config.media !== (config.media || 'video,audio') ||
+            entry.config.mode !== (config.mode || this.defaultMode) ||
+            entry.config.server !== config.server
+        ) {
+            console.error('[StreamManager] Incompatible shared stream configuration');
+            callback(null, 'error', null);
+            return () => {};
         }
 
+        if (!this._observingVisibility) {
+            document.addEventListener('visibilitychange', this._handleVisibilityChange);
+            this._observingVisibility = true;
+        }
+        if (entry.idleTimer !== null) {
+            clearTimeout(entry.idleTimer);
+            entry.idleTimer = null;
+        }
         // Add subscriber
         entry.subscribers.add(callback);
 
@@ -107,7 +146,8 @@ class WebRTCStreamManager {
         }
 
         // Start connection if not already started
-        if (!entry.ws && !entry.pc && entry.status !== 'connecting') {
+        if (!entry.ws && !entry.pc && !entry.reconnectTimer &&
+            entry.status !== 'connecting' && entry.reconnectAttempts < this.maxReconnectAttempts) {
             this._connect(entry);
         }
 
@@ -128,13 +168,13 @@ class WebRTCStreamManager {
 
         // If no more subscribers, schedule cleanup
         if (entry.subscribers.size === 0) {
-            // Keep connection alive for a grace period in case user navigates back
-            setTimeout(() => {
+            entry.idleTimer = setTimeout(() => {
+                entry.idleTimer = null;
                 const currentEntry = this.streams.get(key);
                 if (currentEntry && currentEntry.subscribers.size === 0) {
                     this._closeStream(key);
                 }
-            }, 30000); // 30 second grace period
+            }, UNSUBSCRIBED_GRACE_MS);
         }
     }
 
@@ -166,6 +206,17 @@ class WebRTCStreamManager {
             mode: null,
             reconnectAttempts: 0,
             reconnectTimer: null,
+            signTimer: null,
+            idleTimer: null,
+            hiddenTimer: null,
+            iceTimer: null,
+            frameTimer: null,
+            generation: 0,
+            firstFrameAt: 0,
+            lastFrameAt: 0,
+            lastDecodedFrames: 0,
+            remoteDescriptionSet: false,
+            pendingCandidates: [],
             hass: this._hass,
             config: {
                 mode: config.mode || this.defaultMode,
@@ -180,6 +231,8 @@ class WebRTCStreamManager {
      * @param {StreamEntry} entry 
      */
     async _connect(entry) {
+        if (this.streams.get(entry.key) !== entry || entry.ws || entry.pc ||
+            entry.status === 'connecting' || document.visibilityState === 'hidden') return;
         if (!entry.hass) {
             entry.status = 'error';
             this._notifySubscribers(entry, null, 'error', null);
@@ -187,8 +240,14 @@ class WebRTCStreamManager {
             return;
         }
 
+        const generation = ++entry.generation;
         entry.status = 'connecting';
         this._notifySubscribers(entry, null, 'connecting', null);
+        entry.signTimer = setTimeout(() => {
+            if (!this._isCurrent(entry, generation) || entry.ws) return;
+            console.error('[StreamManager] RTC signing request timed out');
+            this._handleDisconnect(entry);
+        }, SIGN_TIMEOUT_MS);
 
         try {
             // Get signed WebSocket URL from Home Assistant
@@ -196,11 +255,18 @@ class WebRTCStreamManager {
                 type: 'auth/sign_path', 
                 path: '/api/webrtc/ws'
             });
+            if (!this._isCurrent(entry, generation)) return;
+            clearTimeout(entry.signTimer);
+            entry.signTimer = null;
+            if (document.visibilityState === 'hidden') {
+                this._handleDisconnect(entry);
+                return;
+            }
 
             let wsURL = 'ws' + entry.hass.hassUrl(data.path).substring(4);
 
             if (entry.entity) {
-                wsURL += '&entity=' + entry.entity;
+                wsURL += '&entity=' + encodeURIComponent(entry.entity);
             } else if (entry.url) {
                 wsURL += '&url=' + encodeURIComponent(entry.url);
             }
@@ -210,38 +276,56 @@ class WebRTCStreamManager {
             }
 
             // Create WebSocket connection
-            entry.ws = new WebSocket(wsURL);
-            entry.ws.binaryType = 'arraybuffer';
-
-            entry.ws.onopen = () => this._onWsOpen(entry);
-            entry.ws.onmessage = (ev) => this._onWsMessage(entry, ev);
-            entry.ws.onerror = (ev) => this._onWsError(entry, ev);
-            entry.ws.onclose = () => this._onWsClose(entry);
+            const ws = new WebSocket(wsURL);
+            entry.ws = ws;
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => this._onWsOpen(entry, ws, generation);
+            ws.onmessage = (ev) => {
+                if (this._isCurrent(entry, generation) && entry.ws === ws) {
+                    this._onWsMessage(entry, ev);
+                }
+            };
+            ws.onerror = (ev) => this._onWsError(entry, ev, ws, generation);
+            ws.onclose = () => this._onWsClose(entry, ws, generation);
 
         } catch (err) {
+            if (!this._isCurrent(entry, generation)) return;
             console.error('[StreamManager] Connection error:', err);
-            entry.status = 'error';
-            this._notifySubscribers(entry, null, 'error', null);
-            this._scheduleReconnect(entry);
+            this._handleDisconnect(entry);
         }
+    }
+
+    _isCurrent(entry, generation) {
+        return this.streams.get(entry.key) === entry && entry.generation === generation;
+    }
+
+    _isCurrentPeer(entry, pc, generation) {
+        return this._isCurrent(entry, generation) && entry.pc === pc;
     }
 
     /**
      * Handle WebSocket open
      * @param {StreamEntry} entry 
      */
-    _onWsOpen(entry) {
-        console.log('[StreamManager] WebSocket connected for', entry.key);
-        entry.reconnectAttempts = 0;
+    _onWsOpen(entry, ws = entry.ws, generation = entry.generation) {
+        if (!this._isCurrent(entry, generation) || entry.ws !== ws) return;
 
         // Request the stream based on configured modes
         const modes = entry.config.mode.split(',').map(m => m.trim());
         
         // Try WebRTC first if available
-        if (modes.includes('webrtc') || modes.includes('webrtc/tcp')) {
-            this._startWebRTC(entry);
-        } else if (modes.includes('mse')) {
-            this._requestMSE(entry);
+        try {
+            if (modes.includes('webrtc') || modes.includes('webrtc/tcp')) {
+                this._startWebRTC(entry, ws, generation);
+            } else if (modes.includes('mse')) {
+                entry.reconnectAttempts = 0;
+                this._requestMSE(entry);
+            } else {
+                throw new Error('No supported stream mode configured');
+            }
+        } catch (error) {
+            console.error('[StreamManager] Unable to start stream:', error);
+            this._handleDisconnect(entry);
         }
     }
 
@@ -249,71 +333,217 @@ class WebRTCStreamManager {
      * Start WebRTC connection
      * @param {StreamEntry} entry 
      */
-    _startWebRTC(entry) {
-        entry.pc = new RTCPeerConnection({
+    _startWebRTC(entry, ws = entry.ws, generation = entry.generation) {
+        const pc = new RTCPeerConnection({
             iceServers: [{urls: 'stun:stun.l.google.com:19302'}],
             sdpSemantics: 'unified-plan',
         });
+        entry.pc = pc;
+        entry.mode = 'webrtc';
+        entry.firstFrameAt = Date.now();
+        entry.lastFrameAt = 0;
+        entry.lastDecodedFrames = 0;
+        entry.remoteDescriptionSet = false;
+        entry.pendingCandidates = [];
 
-        // Save stream reference when tracks arrive (during SDP), but do NOT
-        // notify subscribers yet — media won't flow until ICE completes.
-        entry.pc.ontrack = (ev) => {
-            if (ev.streams && ev.streams[0]) {
-                entry._pendingStream = ev.streams[0];
-                entry.video.srcObject = ev.streams[0];
-                entry.mode = 'webrtc';
+        pc.ontrack = (ev) => {
+            if (!this._isCurrentPeer(entry, pc, generation)) return;
+            if (!entry._pendingStream) {
+                entry._pendingStream = ev.streams?.[0] || new MediaStream();
+            }
+            if (ev.track && !entry._pendingStream.getTracks().includes(ev.track)) {
+                entry._pendingStream.addTrack(ev.track);
+            }
+            if (entry.video.srcObject !== entry._pendingStream) {
+                entry.video.srcObject = entry._pendingStream;
+                Promise.resolve().then(() => entry.video.play()).catch(error => {
+                    if (!this._isCurrentPeer(entry, pc, generation)) return;
+                    console.error('[StreamManager] Muted RTC playback failed:', error);
+                    this._handleDisconnect(entry);
+                });
             }
         };
 
-        // Only mark as connected once ICE negotiation succeeds and media
-        // can actually flow. This mirrors the upstream video-rtc.js approach.
-        entry.pc.onconnectionstatechange = () => {
-            if (entry.pc.connectionState === 'connected') {
-                entry.stream = entry._pendingStream || entry.video.srcObject;
-                entry.status = 'connected';
-                entry.mode = 'webrtc';
-                this._notifySubscribers(entry, entry.stream, 'connected', 'webrtc');
-                // Play the hidden video to ensure frames are decoded
-                entry.video.play().catch(() => {});
-            } else if (entry.pc.connectionState === 'failed' ||
-                       entry.pc.connectionState === 'disconnected') {
-                this._handleDisconnect(entry);
-            }
-        };
+        pc.onconnectionstatechange = () => this._handlePeerState(entry, pc, generation);
 
-        entry.pc.onicecandidate = (ev) => {
-            if (ev.candidate && entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-                entry.ws.send(JSON.stringify({
+        pc.onicecandidate = (ev) => {
+            if (this._isCurrentPeer(entry, pc, generation) &&
+                ev.candidate && entry.ws === ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
                     type: 'webrtc/candidate',
                     value: ev.candidate.candidate,
                 }));
             }
         };
 
-        // Keep iceconnectionstatechange as a fallback for browsers that
-        // don't fire connectionstatechange reliably (older Safari).
-        entry.pc.oniceconnectionstatechange = () => {
-            if (entry.pc.iceConnectionState === 'failed' || 
-                entry.pc.iceConnectionState === 'disconnected') {
-                this._handleDisconnect(entry);
-            }
-        };
+        pc.oniceconnectionstatechange = () => this._handlePeerState(entry, pc, generation);
 
         // Add transceivers for receiving
-        entry.pc.addTransceiver('video', {direction: 'recvonly'});
+        pc.addTransceiver('video', {direction: 'recvonly'});
         if (entry.config.media.includes('audio')) {
-            entry.pc.addTransceiver('audio', {direction: 'recvonly'});
+            pc.addTransceiver('audio', {direction: 'recvonly'});
         }
 
-        // Create and send offer
-        entry.pc.createOffer().then(offer => {
-            entry.pc.setLocalDescription(offer);
-            if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
-                entry.ws.send(JSON.stringify({
-                    type: 'webrtc/offer',
-                    value: offer.sdp,
-                }));
+        this._scheduleFrameCheck(entry, pc, generation);
+        Promise.resolve().then(async () => {
+            const offer = await pc.createOffer();
+            if (!this._isCurrentPeer(entry, pc, generation)) return;
+            await pc.setLocalDescription(offer);
+            if (!this._isCurrentPeer(entry, pc, generation) || entry.ws !== ws ||
+                ws.readyState !== WebSocket.OPEN) return;
+            ws.send(JSON.stringify({
+                type: 'webrtc/offer',
+                value: offer.sdp,
+            }));
+        }).catch(error => {
+            if (!this._isCurrentPeer(entry, pc, generation)) return;
+            console.error('[StreamManager] RTC offer failed:', error);
+            this._handleDisconnect(entry);
+        });
+    }
+
+    _handlePeerState(entry, pc, generation) {
+        if (!this._isCurrentPeer(entry, pc, generation)) return;
+        const states = [pc.connectionState, pc.iceConnectionState];
+        if (states.includes('failed') || states.includes('closed')) {
+            this._handleDisconnect(entry);
+        } else if (states.includes('disconnected')) {
+            if (document.visibilityState === 'hidden') return;
+            if (entry.iceTimer !== null) return;
+            entry.iceTimer = setTimeout(() => {
+                entry.iceTimer = null;
+                if (!this._isCurrentPeer(entry, pc, generation)) return;
+                if (entry.lastFrameAt && Date.now() - entry.lastFrameAt < FRAME_STALL_MS) return;
+                this._handleDisconnect(entry);
+            }, ICE_RECOVERY_MS);
+        } else if (entry.iceTimer !== null) {
+            clearTimeout(entry.iceTimer);
+            entry.iceTimer = null;
+        }
+    }
+
+    _scheduleFrameCheck(entry, pc, generation) {
+        if (entry.frameTimer !== null || document.visibilityState === 'hidden' ||
+            !this._isCurrentPeer(entry, pc, generation)) return;
+        entry.frameTimer = setTimeout(() => {
+            entry.frameTimer = null;
+            this._checkFrames(entry, pc, generation);
+        }, FRAME_CHECK_MS);
+    }
+
+    async _checkFrames(entry, pc, generation) {
+        if (!this._isCurrentPeer(entry, pc, generation)) return;
+        let decodedFrames = null;
+        try {
+            if (typeof pc.getStats === 'function') {
+                const stats = await pc.getStats();
+                stats.forEach(report => {
+                    if (report.type === 'inbound-rtp' &&
+                        (report.kind === 'video' || report.mediaType === 'video') &&
+                        Number.isFinite(report.framesDecoded)) {
+                        decodedFrames = (decodedFrames || 0) + report.framesDecoded;
+                    }
+                });
             }
+            if (decodedFrames === null && typeof entry.video.getVideoPlaybackQuality === 'function') {
+                const quality = entry.video.getVideoPlaybackQuality();
+                if (Number.isFinite(quality.totalVideoFrames)) {
+                    decodedFrames = quality.totalVideoFrames;
+                }
+            }
+        } catch (error) {
+            if (this._isCurrentPeer(entry, pc, generation) && !entry.statsErrorLogged) {
+                console.error('[StreamManager] Unable to measure RTC frames:', error);
+                entry.statsErrorLogged = true;
+            }
+        }
+        if (!this._isCurrentPeer(entry, pc, generation) || document.visibilityState === 'hidden') return;
+
+        if (decodedFrames !== null && decodedFrames > entry.lastDecodedFrames) {
+            entry.lastDecodedFrames = decodedFrames;
+            entry.lastFrameAt = Date.now();
+            if (entry._pendingStream && entry.status !== 'connected') {
+                entry.stream = entry._pendingStream;
+                entry.status = 'connected';
+                entry.reconnectAttempts = 0;
+                this._notifySubscribers(entry, entry.stream, 'connected', 'webrtc');
+            }
+        }
+
+        const now = Date.now();
+        const firstFrameTimedOut = (!entry._pendingStream || !entry.lastFrameAt) &&
+            now - entry.firstFrameAt >= FIRST_FRAME_TIMEOUT_MS;
+        const videoStalled = entry.lastFrameAt > 0 && now - entry.lastFrameAt >= FRAME_STALL_MS;
+        if (firstFrameTimedOut || videoStalled) {
+            console.error('[StreamManager] RTC video frames stopped advancing');
+            this._handleDisconnect(entry);
+            return;
+        }
+        this._scheduleFrameCheck(entry, pc, generation);
+    }
+
+    _onVisibilityChange() {
+        const hidden = document.visibilityState === 'hidden';
+        this.streams.forEach(entry => {
+            if (hidden) {
+                if (entry.status === 'connecting' && !entry.pc) {
+                    this._handleDisconnect(entry);
+                }
+                if (entry.frameTimer !== null) {
+                    clearTimeout(entry.frameTimer);
+                    entry.frameTimer = null;
+                }
+                if (entry.iceTimer !== null) {
+                    clearTimeout(entry.iceTimer);
+                    entry.iceTimer = null;
+                }
+                if (entry.reconnectTimer !== null) {
+                    clearTimeout(entry.reconnectTimer);
+                    entry.reconnectTimer = null;
+                }
+                if (entry.pc && entry.hiddenTimer === null) {
+                    entry.hiddenTimer = setTimeout(() => {
+                        entry.hiddenTimer = null;
+                        if (document.visibilityState === 'hidden' && entry.pc) {
+                            this._handleDisconnect(entry);
+                        }
+                    }, HIDDEN_RELEASE_MS);
+                }
+            } else {
+                if (entry.hiddenTimer !== null) {
+                    clearTimeout(entry.hiddenTimer);
+                    entry.hiddenTimer = null;
+                }
+                if (entry.pc) {
+                    entry.firstFrameAt = Date.now();
+                    entry.lastFrameAt = Date.now();
+                    if (entry.status === 'connected') {
+                        entry.status = 'connecting';
+                        this._notifySubscribers(entry, null, 'connecting', null);
+                    }
+                    this._scheduleFrameCheck(entry, entry.pc, entry.generation);
+                } else if (entry.subscribers.size > 0 && !entry.ws && entry.status !== 'connecting') {
+                    entry.reconnectAttempts = 0;
+                    this._connect(entry);
+                }
+            }
+        });
+    }
+
+    _retryIdleStreams() {
+        if (document.visibilityState === 'hidden') return;
+        this.streams.forEach(entry => {
+            if (entry.subscribers.size === 0 || entry.pc || entry.ws) return;
+            if (entry.status === 'connecting') {
+                this._clearTransport(entry);
+                entry.status = 'disconnected';
+            }
+            if (entry.reconnectTimer !== null) {
+                clearTimeout(entry.reconnectTimer);
+                entry.reconnectTimer = null;
+            }
+            entry.reconnectAttempts = 0;
+            this._connect(entry);
         });
     }
 
@@ -334,8 +564,12 @@ class WebRTCStreamManager {
      */
     _onWsMessage(entry, ev) {
         if (typeof ev.data === 'string') {
-            const msg = JSON.parse(ev.data);
-            this._handleJsonMessage(entry, msg);
+            try {
+                this._handleJsonMessage(entry, JSON.parse(ev.data));
+            } catch (error) {
+                console.error('[StreamManager] Invalid RTC signaling message:', error);
+                this._handleDisconnect(entry);
+            }
         } else {
             // Binary data for MSE
             this._handleBinaryData(entry, ev.data);
@@ -351,19 +585,32 @@ class WebRTCStreamManager {
         switch (msg.type) {
             case 'webrtc/answer':
                 if (entry.pc) {
-                    entry.pc.setRemoteDescription({
+                    const pc = entry.pc;
+                    const generation = entry.generation;
+                    Promise.resolve(pc.setRemoteDescription({
                         type: 'answer',
                         sdp: msg.value,
+                    })).then(() => {
+                        if (!this._isCurrentPeer(entry, pc, generation)) return;
+                        entry.remoteDescriptionSet = true;
+                        for (const candidate of entry.pendingCandidates.splice(0)) {
+                            this._addIceCandidate(entry, pc, generation, candidate);
+                        }
+                    }).catch(error => {
+                        if (!this._isCurrentPeer(entry, pc, generation)) return;
+                        console.error('[StreamManager] RTC answer failed:', error);
+                        this._handleDisconnect(entry);
                     });
                 }
                 break;
 
             case 'webrtc/candidate':
                 if (entry.pc && msg.value) {
-                    entry.pc.addIceCandidate({
-                        candidate: msg.value,
-                        sdpMid: '0',
-                    });
+                    if (entry.remoteDescriptionSet) {
+                        this._addIceCandidate(entry, entry.pc, entry.generation, msg.value);
+                    } else {
+                        entry.pendingCandidates.push(msg.value);
+                    }
                 }
                 break;
 
@@ -374,10 +621,20 @@ class WebRTCStreamManager {
 
             case 'error':
                 console.error('[StreamManager] Stream error:', msg.value);
-                entry.status = 'error';
-                this._notifySubscribers(entry, null, 'error', null);
+                this._handleDisconnect(entry);
                 break;
         }
+    }
+
+    _addIceCandidate(entry, pc, generation, value) {
+        Promise.resolve().then(() => pc.addIceCandidate({
+            candidate: value,
+            sdpMid: '0',
+        })).catch(error => {
+            if (!this._isCurrentPeer(entry, pc, generation)) return;
+            console.error('[StreamManager] RTC candidate failed:', error);
+            this._handleDisconnect(entry);
+        });
     }
 
     /**
@@ -436,16 +693,23 @@ class WebRTCStreamManager {
      * @param {StreamEntry} entry 
      * @param {Event} ev 
      */
-    _onWsError(entry, ev) {
+    _onWsError(entry, ev, ws = entry.ws, generation = entry.generation) {
+        if (!this._isCurrent(entry, generation) || entry.ws !== ws) return;
         console.error('[StreamManager] WebSocket error for', entry.key, ev);
+        this._handleDisconnect(entry);
     }
 
     /**
      * Handle WebSocket close
      * @param {StreamEntry} entry 
      */
-    _onWsClose(entry) {
-        console.log('[StreamManager] WebSocket closed for', entry.key);
+    _onWsClose(entry, ws = entry.ws, generation = entry.generation) {
+        if (!this._isCurrent(entry, generation) || entry.ws !== ws) return;
+        entry.ws = null;
+        if (entry.pc && entry.mode === 'webrtc' &&
+            !['failed', 'closed'].includes(entry.pc.connectionState)) {
+            return;
+        }
         this._handleDisconnect(entry);
     }
 
@@ -454,21 +718,48 @@ class WebRTCStreamManager {
      * @param {StreamEntry} entry 
      */
     _handleDisconnect(entry) {
-        entry.ws = null;
-        
-        if (entry.pc) {
-            entry.pc.close();
-            entry.pc = null;
-        }
-
-        entry.stream = null;
+        if (this.streams.get(entry.key) !== entry) return;
+        this._clearTransport(entry);
         entry.status = 'disconnected';
         this._notifySubscribers(entry, null, 'disconnected', null);
 
-        // Only reconnect if there are still subscribers
-        if (entry.subscribers.size > 0) {
+        if (entry.subscribers.size > 0 && document.visibilityState !== 'hidden') {
             this._scheduleReconnect(entry);
         }
+    }
+
+    _clearTransport(entry) {
+        entry.generation++;
+        for (const timer of ['signTimer', 'frameTimer', 'iceTimer', 'hiddenTimer']) {
+            if (entry[timer] !== null) clearTimeout(entry[timer]);
+            entry[timer] = null;
+        }
+        const ws = entry.ws;
+        entry.ws = null;
+        if (ws) {
+            ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+            ws.close();
+        }
+        const pc = entry.pc;
+        entry.pc = null;
+        if (pc) {
+            pc.ontrack = pc.onconnectionstatechange = pc.oniceconnectionstatechange = pc.onicecandidate = null;
+            pc.close();
+        }
+        if (entry._mediaSource && entry.video.src) URL.revokeObjectURL(entry.video.src);
+        entry._mediaSource = null;
+        entry._sourceBuffer = null;
+        entry.video.srcObject = null;
+        entry.video.removeAttribute('src');
+        entry._pendingStream = null;
+        entry.stream = null;
+        entry.mode = null;
+        entry.remoteDescriptionSet = false;
+        entry.pendingCandidates = [];
+        entry.firstFrameAt = 0;
+        entry.lastFrameAt = 0;
+        entry.lastDecodedFrames = 0;
+        entry.statsErrorLogged = false;
     }
 
     /**
@@ -476,7 +767,7 @@ class WebRTCStreamManager {
      * @param {StreamEntry} entry 
      */
     _scheduleReconnect(entry) {
-        if (entry.reconnectTimer) return;
+        if (entry.reconnectTimer !== null) return;
         if (entry.reconnectAttempts >= this.maxReconnectAttempts) {
             console.error('[StreamManager] Max reconnect attempts reached for', entry.key);
             entry.status = 'error';
@@ -485,13 +776,14 @@ class WebRTCStreamManager {
         }
 
         entry.reconnectAttempts++;
-        const delay = this.reconnectDelay * Math.pow(2, entry.reconnectAttempts - 1);
+        const delay = Math.min(this.maxReconnectDelay,
+            this.reconnectDelay * Math.pow(2, entry.reconnectAttempts - 1));
         
         console.log(`[StreamManager] Reconnecting ${entry.key} in ${delay}ms (attempt ${entry.reconnectAttempts})`);
         
         entry.reconnectTimer = setTimeout(() => {
             entry.reconnectTimer = null;
-            if (entry.subscribers.size > 0) {
+            if (entry.subscribers.size > 0 && document.visibilityState !== 'hidden') {
                 this._connect(entry);
             }
         }, delay);
@@ -522,29 +814,19 @@ class WebRTCStreamManager {
         const entry = this.streams.get(key);
         if (!entry) return;
 
-        console.log('[StreamManager] Closing stream', key);
-
-        if (entry.reconnectTimer) {
-            clearTimeout(entry.reconnectTimer);
-        }
-
-        if (entry.ws) {
-            entry.ws.close();
-        }
-
-        if (entry.pc) {
-            entry.pc.close();
-        }
+        if (entry.reconnectTimer !== null) clearTimeout(entry.reconnectTimer);
+        if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+        this._clearTransport(entry);
 
         if (entry.video && entry.video.parentNode) {
             entry.video.parentNode.removeChild(entry.video);
         }
 
-        if (entry._mediaSource) {
-            URL.revokeObjectURL(entry.video.src);
-        }
-
         this.streams.delete(key);
+        if (this.streams.size === 0 && this._observingVisibility) {
+            document.removeEventListener('visibilitychange', this._handleVisibilityChange);
+            this._observingVisibility = false;
+        }
     }
 
     /**
@@ -555,16 +837,13 @@ class WebRTCStreamManager {
         const entry = this.streams.get(key);
         if (!entry) return;
 
-        if (entry.ws) {
-            entry.ws.close();
-        }
-        if (entry.pc) {
-            entry.pc.close();
-            entry.pc = null;
-        }
-
+        if (entry.reconnectTimer !== null) clearTimeout(entry.reconnectTimer);
+        entry.reconnectTimer = null;
+        this._clearTransport(entry);
+        entry.status = 'disconnected';
+        this._notifySubscribers(entry, null, 'disconnected', null);
         entry.reconnectAttempts = 0;
-        this._connect(entry);
+        if (entry.subscribers.size > 0) this._connect(entry);
     }
 
     /**
